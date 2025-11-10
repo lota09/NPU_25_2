@@ -1,2 +1,7 @@
 /.venv/
 /week*/
+.gitignore
+assets/
+dev/
+results/
+trash/

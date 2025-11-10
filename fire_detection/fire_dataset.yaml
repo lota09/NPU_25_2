@@ -1,0 +1,15 @@
+# Fire Detection Dataset Configuration
+# 불꽃 감지 데이터셋 설정
+
+# 데이터셋 경로 (상대 경로)
+path: assets/home fire  # 데이터셋 루트 디렉토리
+train: train/images  # 훈련 이미지 경로
+val: val/images      # 검증 이미지 경로
+test: test/images    # 테스트 이미지 경로 (선택적)
+
+# 클래스 정의
+names:
+  0: fire  # 불꽃 클래스
+
+# 클래스 개수
+nc: 1
