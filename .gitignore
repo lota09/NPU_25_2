@@ -1,7 +1,9 @@
 /.venv/
-/week*/
+/assignment*/
 .gitignore
 assets/
 dev/
 results/
 trash/
+__pycache__/
+*.pt

@@ -1,0 +1,13 @@
+{
+  "trusted_devices": [
+      "2A:A2:47:55:6C:D9"
+  ],
+  "network_range": "192.168.50.0/24",
+  "arp_timeout": 2,
+  "yolo_model": "yolov8n.pt",
+  "detection_threshold": 0.5,
+  "alert_cooldown": 30,
+  "camera_index": 0,
+  "show_detection_window": true,
+  "log_file": "intrusion_log.txt"
+}
