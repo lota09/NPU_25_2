@@ -7,3 +7,4 @@ results/
 trash/
 __pycache__/
 *.pt
+.vscode/
