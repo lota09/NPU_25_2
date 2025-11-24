@@ -20,7 +20,8 @@ INPUT_SIZE = (640, 640)
 MOVEMENT_THRESHOLD = 15 # 픽셀 이동 임계값 (값이 낮을수록 민감)
 
 # ★★★ 5단계: MQTT 설정 ★★★
-MQTT_BROKER_HOST = "broker.hivemq.com" # 테스트용 공개 브로커
+## MQTT_BROKER_HOST = "broker.hivemq.com" # 테스트용 공개 브로커
+MQTT_BROKER_HOST = "192.168.219.107" # IP4P
 MQTT_BROKER_PORT = 1883
 MQTT_TOPIC = "sleep_monitor/user/test01" # 데이터를 발행할 토픽 (게시판 주소)
 
