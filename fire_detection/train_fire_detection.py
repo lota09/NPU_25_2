@@ -1,13 +1,14 @@
 """
-불꽃 감지 YOLO 모델 훈련 스크립트
-Fire Detection YOLO Model Training Script
+불꽃 감지 YOLOv7 모델 훈련 스크립트
+Fire Detection YOLOv7 Model Training Script
 """
 
 import torch
-from ultralytics import YOLO
 import os
 from pathlib import Path
 import time
+import subprocess
+import sys
 
 def check_gpu_status():
     """GPU 상태 확인"""
@@ -23,31 +24,28 @@ def check_gpu_status():
 
 def train_fire_detection_model(
     data_yaml='fire_dataset.yaml',
-    model_name='yolov8n.pt',  # yolov8n, yolov8s, yolov8m, yolov8l, yolov8x
     epochs=100,
     imgsz=640,
     batch_size=16,
-    project_name='fire_detection_runs',
+    weights='yolov7.pt',
+    cfg='cfg/training/yolov7.yaml',
     experiment_name='fire_model'
 ):
     """
-    불꽃 감지 모델 훈련
+    불꽃 감지 YOLOv7 모델 훈련
     
-    Args:
-        data_yaml (str): 데이터셋 설정 YAML 파일 경로
-        model_name (str): 사전 훈련된 YOLO 모델 이름
-        epochs (int): 훈련 에포크 수
-        imgsz (int): 입력 이미지 크기
-        batch_size (int): 배치 크기
-        project_name (str): 프로젝트 이름 (결과 저장 폴더)
-        experiment_name (str): 실험 이름
+    Note: YOLOv7은 자동으로 best.pt (최고 mAP 모델)를 저장합니다.
+          과적합 방지는 best.pt 사용으로 자동 처리됩니다.
     """
     
-    print("🔥 불꽃 감지 YOLO 모델 훈련 시작")
+    print("🔥 불꽃 감지 YOLOv7 모델 훈련 시작")
     print("=" * 60)
     
     # GPU 상태 확인
     gpu_available = check_gpu_status()
+    
+    # YOLOv7 디렉토리
+    yolov7_dir = Path('yolov7')
     
     # 데이터셋 YAML 파일 확인
     if not os.path.exists(data_yaml):
@@ -55,89 +53,53 @@ def train_fire_detection_model(
         return None
     
     print(f"\n📊 훈련 설정:")
-    print(f"   - 모델: {model_name}")
+    print(f"   - 모델: YOLOv7")
     print(f"   - 데이터셋: {data_yaml}")
     print(f"   - 에포크: {epochs}")
     print(f"   - 이미지 크기: {imgsz}x{imgsz}")
     print(f"   - 배치 크기: {batch_size}")
+    print(f"   - 과적합 방지: best.pt 자동 저장 (최고 mAP 모델)")
     print(f"   - 디바이스: {'GPU (CUDA)' if gpu_available else 'CPU'}")
-    
-    # YOLO 모델 로드
-    print(f"\n🤖 모델 로딩 중: {model_name}")
-    model = YOLO(model_name)
     
     # 훈련 시작
     print(f"\n🚀 훈련 시작...")
     start_time = time.time()
     
     try:
-        results = model.train(
-            data=data_yaml,
-            epochs=epochs,
-            imgsz=imgsz,
-            batch=batch_size,
-            project=project_name,
-            name=experiment_name,
-            device='0' if gpu_available else 'cpu',
-            
-            # 성능 최적화 옵션
-            workers=8,  # 데이터 로딩 워커 수
-            cache=True,  # 이미지 캐싱 (RAM에 여유가 있을 경우)
-            
-            # 데이터 증강 옵션
-            hsv_h=0.015,  # 색조 변화
-            hsv_s=0.7,    # 채도 변화
-            hsv_v=0.4,    # 명도 변화
-            degrees=0.0,  # 회전
-            translate=0.1,  # 이동
-            scale=0.5,    # 스케일
-            shear=0.0,    # 전단
-            perspective=0.0,  # 원근
-            flipud=0.0,   # 상하 반전
-            fliplr=0.5,   # 좌우 반전
-            mosaic=1.0,   # 모자이크 증강
-            mixup=0.0,    # 믹스업 증강
-            
-            # Early stopping
-            patience=50,  # 50 에포크 동안 개선이 없으면 중단
-            
-            # 저장 옵션
-            save=True,
-            save_period=10,  # 10 에포크마다 저장
-            
-            # 검증 옵션
-            val=True,
-            plots=True,  # 결과 플롯 생성
-            
-            # 추가 옵션
-            verbose=True,
-            seed=42,  # 재현성을 위한 시드
-        )
+        # 절대 경로로 변환
+        data_yaml_abs = str(Path(data_yaml).absolute())
+        
+        # YOLOv7 train.py 실행
+        cmd = [
+            sys.executable,
+            str(yolov7_dir / 'train.py'),
+            '--workers', '8',
+            '--device', '0',  # GPU 강제 사용
+            '--batch-size', str(batch_size),
+            '--epochs', str(epochs),
+            '--data', data_yaml_abs,
+            '--img', str(imgsz),
+            '--cfg', str(yolov7_dir / cfg),
+            '--weights', str(yolov7_dir / weights),
+            '--name', experiment_name,
+            '--hyp', str(yolov7_dir / 'data/hyp.scratch.p5.yaml'),
+            '--project', str(Path.cwd() / 'runs/train')
+        ]
+        
+        print(f"실행 명령: {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
         
         training_time = time.time() - start_time
         
         print(f"\n✅ 훈련 완료!")
         print(f"⏱️  총 훈련 시간: {training_time/60:.1f}분")
         
-        # 결과 경로 출력
-        save_dir = Path(project_name) / experiment_name
+        # 결과 경로
+        save_dir = yolov7_dir / 'runs' / 'train' / experiment_name
         best_model = save_dir / 'weights' / 'best.pt'
-        last_model = save_dir / 'weights' / 'last.pt'
         
         print(f"\n📁 훈련 결과:")
         print(f"   - 최고 모델: {best_model}")
-        print(f"   - 최종 모델: {last_model}")
-        print(f"   - 결과 폴더: {save_dir}")
-        
-        # 모델 검증
-        print(f"\n📊 모델 검증 중...")
-        metrics = model.val()
-        
-        print(f"\n📈 성능 메트릭:")
-        print(f"   - mAP50: {metrics.box.map50:.4f}")
-        print(f"   - mAP50-95: {metrics.box.map:.4f}")
-        print(f"   - Precision: {metrics.box.mp:.4f}")
-        print(f"   - Recall: {metrics.box.mr:.4f}")
         
         return str(best_model)
         
@@ -155,11 +117,11 @@ def main():
     """메인 함수"""
     import argparse
     
-    parser = argparse.ArgumentParser(description='불꽃 감지 YOLO 모델 훈련')
-    parser.add_argument('--data', type=str, default='fire_dataset.yaml',
+    parser = argparse.ArgumentParser(description='불꽃 감지 YOLOv7 모델 훈련')
+    parser.add_argument('--data', type=str, default='fire_data.yaml',
                        help='데이터셋 설정 YAML 파일')
-    parser.add_argument('--model', type=str, default='yolov8n.pt',
-                       help='기본 모델 (yolov8n.pt, yolov8s.pt, yolov8m.pt)')
+    parser.add_argument('--weights', type=str, default='yolov7.pt',
+                       help='YOLOv7 사전 훈련 가중치')
     parser.add_argument('--epochs', type=int, default=100,
                        help='훈련 에포크 수')
     parser.add_argument('--batch', type=int, default=16,
@@ -174,10 +136,10 @@ def main():
     # 훈련 시작
     best_model_path = train_fire_detection_model(
         data_yaml=args.data,
-        model_name=args.model,
         epochs=args.epochs,
         imgsz=args.imgsz,
         batch_size=args.batch,
+        weights=args.weights,
         experiment_name=args.name
     )
     

@@ -8,7 +8,15 @@ import time
 import os
 from datetime import datetime
 from typing import Dict, Optional
-from arp_scanner import ARPScanner
+
+# Enhanced ARP Scanner 사용 (더 많은 장치 감지)
+try:
+    from enhanced_arp_scanner import EnhancedARPScanner as ARPScanner
+    print("[System] Enhanced ARP Scanner 사용 (Scapy 기반)")
+except ImportError:
+    from arp_scanner import ARPScanner
+    print("[System] 기본 ARP Scanner 사용")
+
 from person_detector import PersonDetector
 
 
