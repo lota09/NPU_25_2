@@ -8,3 +8,5 @@ trash/
 __pycache__/
 *.pt
 .vscode/
+/week*/
+.gitignore
