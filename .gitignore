@@ -4,7 +4,7 @@
 assets/
 dev/
 results/
-trash/
+trash*/
 __pycache__/
 *.pt
 .vscode/
