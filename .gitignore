@@ -2,6 +2,7 @@
 /assignment*/
 .gitignore
 assets/
+calibration_dataset/
 dev/
 results/
 trash*/
@@ -10,3 +11,17 @@ __pycache__/
 .vscode/
 /week*/
 .gitignore
+models
+models/best_npu_fp32_v1601/
+models/best_npu_int8_v1601/
+models/dxnn_output/
+models/v7_merged_100epoch_16batch.torchscript.pt*
+
+# yolov7 내부 임시/실험/캐시 파일
+/yolov7/__pycache__/
+/yolov7/runs/
+/yolov7/outputs/
+
+# 기타
+*.log
+*.bin
