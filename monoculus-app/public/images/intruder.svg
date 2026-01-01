@@ -1,0 +1,13 @@
+<!-- SVG Placeholder for Intruder Detection -->
+<svg width="800" height="600" xmlns="http://www.w3.org/2000/svg">
+  <rect width="800" height="600" fill="#1a1a1a"/>
+  <text x="400" y="280" font-family="Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle" font-weight="bold">
+    침입자 감지
+  </text>
+  <text x="400" y="330" font-family="Arial, sans-serif" font-size="18" fill="#999999" text-anchor="middle">
+    Intruder Detected
+  </text>
+  <circle cx="400" cy="180" r="50" fill="none" stroke="#ff3333" stroke-width="3"/>
+  <line x1="370" y1="180" x2="430" y2="180" stroke="#ff3333" stroke-width="3"/>
+  <line x1="400" y1="150" x2="400" y2="210" stroke="#ff3333" stroke-width="3"/>
+</svg>

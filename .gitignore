@@ -1,27 +1,29 @@
-/.venv/
-/assignment*/
-.gitignore
-assets/
-calibration_dataset/
-dev/
-results/
-trash*/
+# Dependencies
+node_modules/
+npm-debug.log*
+
+# Python
 __pycache__/
-*.pt
-.vscode/
-/week*/
-.gitignore
-models
-models/best_npu_fp32_v1601/
-models/best_npu_int8_v1601/
-models/dxnn_output/
-models/v7_merged_100epoch_16batch.torchscript.pt*
+*.py[cod]
+venv/
+venv-dxnn/
+*.egg-info/
 
-# yolov7 내부 임시/실험/캐시 파일
-/yolov7/__pycache__/
-/yolov7/runs/
-/yolov7/outputs/
-
-# 기타
+# Logs
 *.log
-*.bin
+logs/
+
+# Images (captured)
+*.jpg
+*.jpeg
+!monoculus-app/public/images/*.svg
+!monoculus-app/public/images/intruder.png
+
+# Models
+*.dxnn
+*.pt
+*.pth
+
+# Videos
+*.avi
+*.mp4
