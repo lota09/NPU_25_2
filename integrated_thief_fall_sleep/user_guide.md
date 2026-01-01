@@ -29,11 +29,3 @@
 2.  **네트워크 인터페이스 (`system.arp_interface`)**:
     *   오렌지파이/리눅스 기기마다 와이파이 장치 이름이 다를 수 있습니다. (예: `wlan0`, `wlP2p33s0` 등)
     *   터미널에서 `ifconfig` 또는 `ip a`를 입력해 현재 쓰고 있는 인터페이스 이름을 확인 후 수정하세요.
-
-## 3. 이 프로그램을 '노트북'에서 실행하고 싶다면?
-현재 코드는 **Orange Pi NPU (DeepX SDK)** 전용으로 작성되어 있습니다. 일반 노트북(Windows/Mac)에서 실행하려면 코드 수정이 필요합니다.
-
-### 코드 수정 필요성
-*   **DeepX SDK 제거**: 일반 노트북에는 NPU가 없으므로 `dx_engine` 관련 코드를 지워야 합니다.
-*   **대체 AI 모델 적용**: 대신 `ultralytics` (YOLOv8) 라이브러리나 `OpenCV DNN` 모듈을 사용하여 사람을 감지하도록 코드를 개조해야 합니다.
-    *   `integrated_monitor_2.py`의 `SystemManager` 클래스에서 `DEEPX_AVAILABLE` 체크 로직과 `run` 함수의 추론 부분을 수정해야 합니다.
