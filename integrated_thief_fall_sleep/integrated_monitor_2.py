@@ -224,6 +224,30 @@ class SleepMonitor:
             return ((kpts[L_HIP][0]+kpts[R_HIP][0])/2, (kpts[L_HIP][1]+kpts[R_HIP][1])/2)
         return ((bbox[0]+bbox[2])/2, (bbox[1]+bbox[3])/2)
 
+
+class ThiefDetector:
+    def __init__(self):
+        self.last_intruder_alert = 0
+        self.cool = CONFIG.get("thresholds", {}).get("alert_cooldown", 5)
+
+    def process(self, detections, current_time):
+        """
+        침입자 감지 처리
+        Returns: (is_intruder, should_alert)
+        """
+        if not detections:
+            return False, False
+
+        # 침입자 감지됨
+        is_intruder = True
+        should_alert = False
+
+        if current_time - self.last_intruder_alert > self.cool:
+            should_alert = True
+            self.last_intruder_alert = current_time
+            
+        return is_intruder, should_alert
+
 # ==========================================
 # System Manager (Main)
 # ==========================================
@@ -237,12 +261,18 @@ class SystemManager:
         self.last_scan = 0
         self.is_home = True
         self.mqtt = None
-        self.last_intruder_alert = 0
+        self.thief_detector = ThiefDetector()
         self.macs = [m.upper() for m in CONFIG["trusted_devices"]]
+        self.known_ips = {} # MAC -> Last Known IP
         
         if MQTT_AVAILABLE:
             try:
-                self.mqtt = mqtt.Client()
+                # MQTT V2 API 사용 (DeprecationWarning 해결)
+                if hasattr(mqtt, "CallbackAPIVersion"):
+                     self.mqtt = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+                else:
+                     self.mqtt = mqtt.Client() # 구버전 호환
+                
                 self.mqtt.connect(CONFIG["mqtt"]["host"], CONFIG["mqtt"]["port"])
                 self.mqtt.loop_start()
                 print("📡 MQTT Connected")
@@ -261,11 +291,72 @@ class SystemManager:
             cmd = ["sudo", "arp-scan", "-l", f"--interface={iface}"]
             if not os.path.exists("/usr/bin/arp-scan"): cmd = ["arp", "-a"]
             
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
-            found = any(m in res.stdout.upper() for m in self.macs)
+            # Check which tool is used
+            # is_active_scan = (cmd[1] == "arp-scan")
             
+            # [ARP Cache Refresh] arp-scan이 없을 때, 강제로 테이블 갱신 유도
+            if cmd[0] == "arp":
+                # 현재 서브넷의 브로드캐스트 주소 추정 (예: 192.168.219.255)
+                # 하드코딩 대신 간단히 핑을 한 번 널리 뿌림 (Background)
+                try:
+                    # Linux Broadcast Ping
+                    subprocess.run(["ping", "-c", "1", "-b", "192.168.219.255"], 
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=0.2)
+                except: pass
+
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+            
+            found = False
+            active_devs = []
+            
+            # 1. ARP Cache에서 발견된 IP 업데이트
+            current_ips = {} # MAC -> IP
+            
+            for line in res.stdout.splitlines():
+                upper_line = line.upper()
+                for mac in self.macs:
+                    if mac in upper_line:
+                        parts = line.split()
+                        ip = None
+                        if '(' in line and ')' in line:
+                            start = line.find('(') + 1
+                            end = line.find(')')
+                            ip = line[start:end]
+                        elif len(parts) >= 2 and parts[0] != '?':
+                            ip = parts[0]
+                            
+                        if ip:
+                            current_ips[mac] = ip
+                            self.known_ips[mac] = ip # Update History
+
+            # 2. 각 Trusted Device 확인 (Active Ping Check)
+            for mac in self.macs:
+                target_ip = current_ips.get(mac)
+                
+                if not target_ip:
+                    target_ip = self.known_ips.get(mac)
+                
+                if target_ip:
+                    # Ping Test (1회, 1초 타임아웃)
+                    param = '-n' if sys.platform.lower()=='windows' else '-c'
+                    ping_cmd = ["ping", param, "1", target_ip]
+                    if sys.platform.lower() != 'windows': ping_cmd.extend(["-W", "1"])
+                    
+                    try:
+                        pr = subprocess.run(ping_cmd, capture_output=True, text=True, timeout=1)
+                        if pr.returncode == 0:
+                            found = True
+                            active_devs.append(f"{mac}({target_ip})")
+                        else:
+                             # Ping 실패 (AWAY)
+                             pass
+                    except: pass
+
             if self.is_home != found:
-                print(f"📡 MODE: {'HOME' if found else 'AWAY'}")
+                print(f"📡 MODE CHANGE: {'HOME' if found else 'AWAY'} (Active: {active_devs})")
+            
+            self.is_home = found
+            
             self.is_home = found
         except: pass
         self.last_scan = time.time()
@@ -389,18 +480,19 @@ class SystemManager:
                                 cv2.putText(frame, f"FALL ({ftype})", (50, 200), 1, 2, (0,0,255), 3)
                     else:
                         res = self.parse_yolov8(outputs[0], frame.shape)
-                        if res:
+                        
+                        is_intruder, should_alert = self.thief_detector.process(res, curr_time)
+                        
+                        if is_intruder:
                             intruder_alert = True
                             for det in res:
                                 self._draw_overlay(frame, det['bbox'], f"INTRUDER {det['conf']:.2f}", (0,0,255))
                             cv2.putText(frame, "!!! INTRUDER !!!", (50, 200), 1, 3, (0,0,255), 3)
                             
                             # [추가] 침입자 즉시 전송
-                            cool = CONFIG["thresholds"].get("alert_cooldown", 5)
-                            if self.mqtt and (curr_time - self.last_intruder_alert > cool):
+                            if self.mqtt and should_alert:
                                 self.mqtt.publish(CONFIG["mqtt"]["topic"], "INTRUDER_DETECTED")
                                 print("🚨 SENT INTRUDER ALERT")
-                                self.last_intruder_alert = curr_time
                         else:
                             cv2.putText(frame, "Monitoring...", (10, 50), 1, 1, (255,255,0), 2)
                 except Exception: pass
