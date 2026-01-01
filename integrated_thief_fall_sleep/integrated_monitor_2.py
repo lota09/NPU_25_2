@@ -264,6 +264,7 @@ class SystemManager:
         self.thief_detector = ThiefDetector()
         self.macs = [m.upper() for m in CONFIG["trusted_devices"]]
         self.known_ips = {} # MAC -> Last Known IP
+        self.last_home_time = time.time() # Grace period logic
         
         if MQTT_AVAILABLE:
             try:
@@ -352,12 +353,27 @@ class SystemManager:
                              pass
                     except: pass
 
-            if self.is_home != found:
-                print(f"📡 MODE CHANGE: {'HOME' if found else 'AWAY'} (Active: {active_devs})")
+            if found:
+                self.last_home_time = time.time() # 마지막으로 집에 있던 시간 갱신
+                if not self.is_home:
+                     print(f"📡 MODE CHANGE: HOME (Active: {active_devs})")
+                     self.is_home = True
+            else:
+                # [Simple Logic]
+                # 연결이 끊겨도 일정 시간(Timeout)은 대기 (잠김 상태/Deep Sleep 방지)
+                timeout = CONFIG["system"].get("away_timeout", 300) # 기본 5분
+                elapsed = time.time() - self.last_home_time
+                
+                if elapsed < timeout:
+                    # 유예 기간 중
+                    pass
+                else:
+                    # Timeout 초과 -> 진짜 AWAY
+                    if self.is_home:
+                        print(f"📡 MODE CHANGE: AWAY (No signal for {int(elapsed)}s)")
+                        self.is_home = False
             
-            self.is_home = found
-            
-            self.is_home = found
+            return self.is_home
         except: pass
         self.last_scan = time.time()
         return self.is_home
@@ -447,34 +463,35 @@ class SystemManager:
         print("🚀 System Started")
         
         last_mqtt_time = 0
+        fps_start = time.time()
+        fps_cnt = 0
+        fps = 0
+        self.last_status = "UPRIGHT" # 초기 상태
         
         while True:
             is_home = self.check_presence()
             target = 'HOME' if is_home else 'AWAY'
             self.load_model(target)
             
-            ret, frame = cap.read()
-            if not ret: time.sleep(1); continue
-            
-            curr_time = time.time()
-            sleep_status = "N/A"
-            move_count = 0
-            fall_alert = False
-            intruder_alert = False
+            # ... (중략) ...
             
             if self.engine:
-                buf = cv2.resize(frame, (640, 640))
-                buf = cv2.cvtColor(buf, cv2.COLOR_BGR2RGB).tobytes()
-                try:
-                    outputs = self.engine.run([np.frombuffer(buf, dtype=np.uint8)])
-                    if is_home:
-                        res = self.parse_pose(outputs[0], frame.shape)
-                        res.sort(key=lambda x: x['area'], reverse=True)
-                        if res:
-                            user = res[0]
-                            sleep_status, move_count = self.sleep_monitor.process(user)
-                            fall_alert, ftype = self.fall_detector.process(0, user['keypoints'], curr_time)
-                            self._draw_overlay(frame, user['bbox'], f"Status: {sleep_status} | Moves: {move_count}", (0,255,0))
+                 buf = cv2.resize(frame, (640, 640))
+                 buf = cv2.cvtColor(buf, cv2.COLOR_BGR2RGB).tobytes()
+                 try:
+                     outputs = self.engine.run([np.frombuffer(buf, dtype=np.uint8)])
+                     if is_home:
+                         res = self.parse_pose(outputs[0], frame.shape)
+                         res.sort(key=lambda x: x['area'], reverse=True)
+                         if res:
+                             user = res[0]
+                             sleep_status, move_count = self.sleep_monitor.process(user)
+                             
+                             # [상태 업데이트]
+                             self.last_status = sleep_status
+                             
+                             fall_alert, ftype = self.fall_detector.process(0, user['keypoints'], curr_time)
+                             self._draw_overlay(frame, user['bbox'], f"Status: {sleep_status} | Moves: {move_count}", (0,255,0))
                             self._draw_skeleton(frame, user['keypoints'])
                             if fall_alert:
                                 cv2.putText(frame, f"FALL ({ftype})", (50, 200), 1, 2, (0,0,255), 3)
@@ -509,7 +526,25 @@ class SystemManager:
                 self.mqtt.publish(CONFIG["mqtt"]["topic"], json.dumps(payload))
                 last_mqtt_time = curr_time
 
+            # [FPS Calculation & Log]
+            fps_cnt += 1
+            if curr_time - fps_start > 1.0:
+                fps = fps_cnt / (curr_time - fps_start)
+                fps_cnt = 0
+                fps_start = curr_time
+                
+                # 1초마다 상태 출력
+                if is_home:
+                    print(f"🏠 [HOME] FPS:{fps:.1f} | Status: {sleep_status} | Moves: {move_count}")
+                elif intruder_alert and res:
+                    print(f"🚨 [AWAY] INTRUDER DETECTED! Confidence: {res[0]['conf']:.2f}")
+
+            # [Alert Log] - 즉시 출력 (Fall은 비상상황이므로 즉시)
+            if is_home and fall_alert:
+                 print(f"\n🚨 FALL DETECTED ({ftype})! Sending Alert...")
+
             cv2.putText(frame, f"MODE: {target}", (10, 30), 1, 1.5, (0,255,0) if is_home else (0,255,255), 2)
+            cv2.putText(frame, f"FPS: {fps:.1f}", (640-150, 30), 1, 1.5, (255,255,255), 2)
             cv2.imshow("Security System", frame)
             if cv2.waitKey(1) == ord('q'): break
             

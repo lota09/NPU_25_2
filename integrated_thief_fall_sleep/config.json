@@ -2,7 +2,8 @@
   "system": {
     "arp_interface": "wlP2p33s0",
     "arp_interval": 10,
-    "force_mode": "AUTO"
+    "force_mode": "AUTO",
+    "away_timeout": 300
   },
   "trusted_devices": [
     "C2:77:BE:99:90:A1",
