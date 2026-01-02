@@ -14,6 +14,7 @@ import numpy as np
 import json
 import math
 import subprocess
+import threading
 from collections import deque, Counter
 
 # DeepX SDK Check
@@ -265,6 +266,7 @@ class SystemManager:
         self.macs = [m.upper() for m in CONFIG["trusted_devices"]]
         self.known_ips = {} # MAC -> Last Known IP
         self.last_home_time = time.time() # Grace period logic
+        self.ha_data = None # Data from Home Assistant
         
         if MQTT_AVAILABLE:
             try:
@@ -274,33 +276,56 @@ class SystemManager:
                 else:
                      self.mqtt = mqtt.Client() # 구버전 호환
                 
+                self.mqtt.on_message = self._on_mqtt_message
                 self.mqtt.connect(CONFIG["mqtt"]["host"], CONFIG["mqtt"]["port"])
                 self.mqtt.loop_start()
-                print("📡 MQTT Connected")
+                
+                ha_topic = CONFIG["mqtt"].get("ha_topic", "home/ha_status")
+                self.mqtt.subscribe(ha_topic)
+                print(f"📡 MQTT Connected & Subscribed to {ha_topic}")
             except: pass
 
+        # Start Background Presence Scan
+        self.scan_thread = threading.Thread(target=self._presence_loop, daemon=True)
+        self.scan_thread.start()
+
+    def _on_mqtt_message(self, client, userdata, msg):
+        try:
+            payload = msg.payload.decode('utf-8')
+            self.ha_data = json.loads(payload)
+            print(f"📩 HA Update: {self.ha_data}")
+        except: pass
+
     def check_presence(self):
-        mode = CONFIG["system"].get("force_mode", "AUTO")
-        if mode != "AUTO": return (mode == "HOME")
-        
-        interval = CONFIG["system"]["arp_interval"]
-        if time.time() - self.last_scan < interval:
-            return self.is_home
+        # Main Loop에서는 저장된 상태만 즉시 반환 (Non-blocking)
+        return self.is_home
+
+    def _presence_loop(self):
+        """백그라운드에서 주기적으로 존재 감지 수행"""
+        print("🕵️ Presence Scan Thread Started")
+        while True:
+            try:
+                self._perform_scan()
+            except Exception as e:
+                print(f"Error in scan loop: {e}")
             
+            # 다음 스캔까지 대기
+            time.sleep(CONFIG["system"]["arp_interval"])
+
+    def _perform_scan(self):
+        mode = CONFIG["system"].get("force_mode", "AUTO")
+        if mode != "AUTO": 
+            self.is_home = (mode == "HOME")
+            return
+
         try:
             iface = CONFIG["system"]["arp_interface"]
             cmd = ["sudo", "arp-scan", "-l", f"--interface={iface}"]
             if not os.path.exists("/usr/bin/arp-scan"): cmd = ["arp", "-a"]
             
-            # Check which tool is used
-            # is_active_scan = (cmd[1] == "arp-scan")
-            
-            # [ARP Cache Refresh] arp-scan이 없을 때, 강제로 테이블 갱신 유도
+            # [ARP Cache Refresh] arp-scan이 없을 때
             if cmd[0] == "arp":
-                # 현재 서브넷의 브로드캐스트 주소 추정 (예: 192.168.219.255)
-                # 하드코딩 대신 간단히 핑을 한 번 널리 뿌림 (Background)
                 try:
-                    # Linux Broadcast Ping
                     subprocess.run(["ping", "-c", "1", "-b", "192.168.219.255"], 
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=0.2)
                 except: pass
@@ -310,35 +335,31 @@ class SystemManager:
             found = False
             active_devs = []
             
-            # 1. ARP Cache에서 발견된 IP 업데이트
-            current_ips = {} # MAC -> IP
-            
+            # 1. ARP Cache Parsing
+            current_ips = {} 
             for line in res.stdout.splitlines():
                 upper_line = line.upper()
                 for mac in self.macs:
                     if mac in upper_line:
                         parts = line.split()
                         ip = None
-                        if '(' in line and ')' in line:
+                        if '(' in line and ')' in line: # Linux arp format
                             start = line.find('(') + 1
                             end = line.find(')')
                             ip = line[start:end]
-                        elif len(parts) >= 2 and parts[0] != '?':
+                        elif len(parts) >= 2 and parts[0] != '?': # Windows/Other
                             ip = parts[0]
-                            
                         if ip:
                             current_ips[mac] = ip
-                            self.known_ips[mac] = ip # Update History
+                            self.known_ips[mac] = ip 
 
-            # 2. 각 Trusted Device 확인 (Active Ping Check)
+            # 2. Active Ping Check
             for mac in self.macs:
                 target_ip = current_ips.get(mac)
-                
-                if not target_ip:
-                    target_ip = self.known_ips.get(mac)
+                if not target_ip: target_ip = self.known_ips.get(mac)
                 
                 if target_ip:
-                    # Ping Test (1회, 1초 타임아웃)
+                    # Ping (타임아웃 1초 -> 이것 때문에 메인 루프가 끊김)
                     param = '-n' if sys.platform.lower()=='windows' else '-c'
                     ping_cmd = ["ping", param, "1", target_ip]
                     if sys.platform.lower() != 'windows': ping_cmd.extend(["-W", "1"])
@@ -348,35 +369,26 @@ class SystemManager:
                         if pr.returncode == 0:
                             found = True
                             active_devs.append(f"{mac}({target_ip})")
-                        else:
-                             # Ping 실패 (AWAY)
-                             pass
                     except: pass
 
             if found:
-                self.last_home_time = time.time() # 마지막으로 집에 있던 시간 갱신
+                self.last_home_time = time.time()
                 if not self.is_home:
                      print(f"📡 MODE CHANGE: HOME (Active: {active_devs})")
                      self.is_home = True
             else:
-                # [Simple Logic]
-                # 연결이 끊겨도 일정 시간(Timeout)은 대기 (잠김 상태/Deep Sleep 방지)
-                timeout = CONFIG["system"].get("away_timeout", 300) # 기본 5분
-                elapsed = time.time() - self.last_home_time
+                # [Simple Logic] Timeout check (Disabled for testing)
+                # timeout = CONFIG["system"].get("away_timeout", 300)
+                # elapsed = time.time() - self.last_home_time
+                # if elapsed < timeout:
+                #    print(f"⏳ Grace Period: {int(elapsed)}/{timeout}s (Waiting for signal...)")
                 
-                if elapsed < timeout:
-                    # 유예 기간 중
-                    pass
-                else:
-                    # Timeout 초과 -> 진짜 AWAY
+                # if elapsed >= timeout:
+                if True: # Immediate mode
                     if self.is_home:
-                        print(f"📡 MODE CHANGE: AWAY (No signal for {int(elapsed)}s)")
+                        print(f"📡 MODE CHANGE: AWAY (Immediate)")
                         self.is_home = False
-            
-            return self.is_home
         except: pass
-        self.last_scan = time.time()
-        return self.is_home
 
     def load_model(self, mode):
         if self.current_model == mode: return
@@ -473,7 +485,14 @@ class SystemManager:
             target = 'HOME' if is_home else 'AWAY'
             self.load_model(target)
             
-            # ... (중략) ...
+            ret, frame = cap.read()
+            if not ret: time.sleep(1); continue
+            
+            curr_time = time.time()
+            sleep_status = "N/A"
+            move_count = 0
+            fall_alert = False
+            intruder_alert = False
             
             if self.engine:
                  buf = cv2.resize(frame, (640, 640))
@@ -521,7 +540,8 @@ class SystemManager:
                     "status": sleep_status,
                     "moves": move_count,
                     "fall": fall_alert,
-                    "intruder": intruder_alert
+                    "intruder": intruder_alert,
+                    "ha": self.ha_data # Forward HA data to App
                 }
                 self.mqtt.publish(CONFIG["mqtt"]["topic"], json.dumps(payload))
                 last_mqtt_time = curr_time

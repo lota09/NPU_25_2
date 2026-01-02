@@ -14,9 +14,10 @@
     "away_detect": "/home/orangepi/deepx_sdk/dx_app/assets/models/YoloV8N.dxnn"
   },
   "mqtt": {
-    "host": "192.168.219.107",
+    "host": "192.168.219.101",
     "port": 1883,
-    "topic": "home/security"
+    "topic": "home/security",
+    "ha_topic": "home/ha_status"
   },
   "thresholds": {
     "confidence": 0.30,

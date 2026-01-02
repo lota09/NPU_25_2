@@ -1,0 +1,115 @@
+- id: sleep_cycle_manager_final_v4
+  alias: '[1단계] 수면 사이클 관리 (1시간 후 23도)'
+  description: 침대 감지(SIDE/PRONE/UPRIGHT) 10초 후 입면 모드 시작, 1시간 뒤 숙면 온도(23도)로 변경합니다.
+  triggers:
+  - value_template: '{{ states(''sensor.sumyeon_sangtae'') in [''SIDE'', ''PRONE'', ''UPRIGHT''] }}'
+    trigger: template
+    for:
+      seconds: 10
+  actions:
+  - data:
+      title: "\U0001F634 수면 모드 진입"
+      message: 사용자가 침대에 누웠습니다. 입면을 돕기 위해 현재 온도를 유지합니다.
+    action: notify.persistent_notification
+  - service: mqtt.publish
+    data:
+      topic: "home/ha_status"
+      payload: '{"msg": "Sleep Mode Started", "status": "SLEEP_ENTRY", "time": "{{ now().strftime(''%Y-%m-%d %H:%M:%S'') }}"}'
+  - delay:
+      seconds: 10
+  - condition: template
+    value_template: '{{ states(''sensor.sumyeon_sangtae'') in [''SIDE'', ''PRONE'', ''UPRIGHT''] }}'
+  - target:
+      entity_id: climate.hvac
+    data:
+      temperature: 23
+    action: climate.set_temperature
+  - service: input_boolean.turn_on
+    target:
+      entity_id: input_boolean.deep_sleep_mode
+  - service: mqtt.publish
+    data:
+      topic: "home/ha_status"
+      payload: '{"temp": 23, "msg": "Deep Sleep Mode (23C)", "status": "DEEP_SLEEP", "time": "{{ now().strftime(''%Y-%m-%d %H:%M:%S'') }}"}'
+  - data:
+      title: "\U0001F319 숙면 모드 전환"
+      message: 수면 1시간 경과. 쾌적한 숙면을 위해 온도를 23도로 조절합니다.
+    action: notify.persistent_notification
+  mode: restart
+
+- id: sleep_mode_reset_v1
+  alias: '[0단계] 기상 감지 (수면 모드 해제)'
+  description: 수면 자세가 풀리면(기상/이탈) 수면 모드를 끕니다.
+  trigger:
+  - value_template: '{{ states(''sensor.sumyeon_sangtae'') not in [''SIDE'', ''PRONE'', ''UPRIGHT''] }}'
+    trigger: template
+    for:
+      minutes: 1
+  action:
+  - service: input_boolean.turn_off
+    target:
+      entity_id: input_boolean.deep_sleep_mode
+  - service: mqtt.publish
+    data:
+      topic: "home/ha_status"
+      payload: '{"msg": "User Woke Up", "status": "WAKE_UP", "time": "{{ now().strftime(''%Y-%m-%d %H:%M:%S'') }}"}'
+  - service: notify.persistent_notification
+    data:
+      title: "☀️ 기상 감지"
+      message: 사용자가 일어났습니다. 수면 모드를 해제합니다.
+  mode: single
+
+- id: active_comfort_care_final_v6
+  alias: '[2단계] 빈도 감지 스마트 온도 조절'
+  description: 사람이 침대에 있고(Deep Sleep Mode), 최근 10분 동안 뒤척임이 3회 이상 감지되면 온도를 조절합니다.
+  trigger:
+  - platform: numeric_state
+    entity_id: sensor.coegeun_10bun_dwiceogim
+    above: 2.5
+  condition:
+  - condition: template
+    value_template: '{{ states(''sensor.sumyeon_sangtae'') in [''SIDE'', ''PRONE'', ''UPRIGHT''] }}'
+  - condition: state
+    entity_id: input_boolean.deep_sleep_mode
+    state: 'on'
+  action:
+  - choose:
+    - conditions:
+      - condition: state
+        entity_id: climate.hvac
+        state: cool
+      sequence:
+      - service: notify.persistent_notification
+        data:
+          title: ❄️ 수면 케어 (냉방 강화)
+          message: 최근 10분간 잦은 뒤척임(3회) 감지. 더위 해소를 위해 온도를 1도 낮춥니다.
+      - service: climate.set_temperature
+        target:
+          entity_id: climate.hvac
+        data:
+          temperature: '{{ state_attr(''climate.hvac'', ''temperature'') - 1 }}'
+      - service: mqtt.publish
+        data:
+          topic: "home/ha_status"
+          payload: '{"temp": {{ state_attr("climate.hvac", "temperature") }}, "msg": "Temp Adjusted (-1C)", "time": "{{ now().strftime(''%Y-%m-%d %H:%M:%S'') }}", "moves": {{ states("sensor.dwiceogim_hoessu") }}}'
+    - conditions:
+      - condition: state
+        entity_id: climate.hvac
+        state: heat
+      sequence:
+      - service: notify.persistent_notification
+        data:
+          title: "\U0001F525 수면 케어 (난방 강화)"
+          message: 최근 10분간 잦은 뒤척임(3회) 감지. 추위 해소를 위해 온도를 1도 올립니다.
+      - service: climate.set_temperature
+        target:
+          entity_id: climate.hvac
+        data:
+          temperature: '{{ state_attr(''climate.hvac'', ''temperature'') + 1 }}'
+      - service: mqtt.publish
+        data:
+          topic: "home/ha_status"
+          payload: '{"temp": {{ state_attr("climate.hvac", "temperature") }}, "msg": "Temp Adjusted (+1C)", "time": "{{ now().strftime(''%Y-%m-%d %H:%M:%S'') }}", "moves": {{ states("sensor.dwiceogim_hoessu") }}}'
+  - delay:
+      minutes: 10
+  mode: single
