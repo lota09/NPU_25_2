@@ -11,7 +11,7 @@ import os
 import sys
 import time
 from collections import deque
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Union
 
 # OpenCV 백엔드 설정 (디스플레이가 있을 때는 xcb 사용)
 if os.environ.get('DISPLAY') is None:
@@ -47,6 +47,9 @@ class FireDetectionMonitor:
             'MEDIUM': (0.50, 0.65, '🟠 경고'),
             'HIGH': (0.65, 1.00, '🔴 긴급 대피')
         }
+        
+        # LeakyReLU Density Filter Config
+        DENSITY_THRESHOLD = 800  # Fire > 1800, Room < 500. Margin > 500. Safe 800.
         
         def __init__(
             self,
@@ -150,7 +153,7 @@ class FireDetectionMonitor:
         def preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
             """
             프레임 전처리 (YOLO 형식)
-            - 리사이징
+            - 리사이즈
             - Float32 정규화
             - NCHW 포맷 변환
             """
@@ -159,7 +162,7 @@ class FireDetectionMonitor:
                 logger.warning("Empty frame received")
                 return np.zeros((1, 3, self.input_size[0], self.input_size[1]), dtype=np.float32)
             
-            # 리사이징 (아스펙트 비율 유지하며 패딩)
+            # 리사이즈 (아스펙트 비율 유지하며 패딩)
             h, w = frame.shape[:2]
             scale = min(self.input_size[0] / w, self.input_size[1] / h)
             
@@ -177,112 +180,188 @@ class FireDetectionMonitor:
             # BGR -> RGB
             rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
             
-            # NCHW 포맷으로 변환 (Float32로 정규화)
-            img_array = np.asarray(rgb, dtype=np.float32)
-            img_array = img_array.transpose(2, 0, 1) / 255.0
-            img_array = np.expand_dims(img_array, axis=0)  # 배치 추가
+            # NCHW 포맷으로 변환 (Float32로 정규화) -> UINT8로 변경
+            # NPU 입력이 UINT8 Quantized를 기대할 수 있음. 하지만 verify script에서는 flat uint8을 썼음.
+            # 하지만 여기서 dx_engine의 example을 보면 uint8 raw buffer를 넘김.
+            # verify_silu_model.py에서는: input_data = img.flatten().astype(np.uint8)
+            # 여기서는 preprocess_frame이 NCHW float를 리턴하고 있음.
+            # 이 monitor script는 기존에 float입력을 가정했던 것 같음.
+            # 일단 기존 로직을 유지하되 flatten된 uint8을 넘기는게 안전할 수 있음.
+            # 하지만 verify script에서 성공한 방식(Uint8 flatten)을 따르는게 좋음.
             
-            logger.debug(f"Preprocessed - shape: {img_array.shape}, dtype: {img_array.dtype}, "
-                        f"min: {img_array.min():.4f}, max: {img_array.max():.4f}")
+            # img_array = np.asarray(rgb, dtype=np.float32)
+            # img_array = img_array.transpose(2, 0, 1) / 255.0
+            # img_array = np.expand_dims(img_array, axis=0)
             
-            return img_array
+            # DXNN verify script style:
+            return rgb.flatten().astype(np.uint8)
+
         
-        def infer(self, frame: np.ndarray) -> np.ndarray:
+        def infer(self, frame: np.ndarray) -> Union[np.ndarray, List[np.ndarray]]:
             """
             프레임에서 화재 감지 추론 수행
-            
-            Returns:
-                predictions: 모델 출력 [1, 25200, 7] (YOLO 형식)
-                            각 열: [x, y, w, h, confidence, class_0, class_1]
             """
             if self.engine is None:
                 logger.warning("Model not available, skipping inference")
-                return np.zeros((1, 25200, 7), dtype=np.float32)
+                return []
             
             try:
                 # 전처리
                 preprocessed = self.preprocess_frame(frame)
                 
                 # 추론 (DXNN)
+                # run() takes list of inputs
                 predictions = self.engine.run([preprocessed])
                 
-                if isinstance(predictions, list):
-                    predictions = predictions[0]
-                
-                # 디버그: 예측 형태 확인
-                if predictions.size > 0:
-                    logger.debug(f"Raw predictions shape: {predictions.shape}")
-                    if len(predictions.shape) == 3:
-                        logger.debug(f"  Max confidence in raw: {np.max(predictions[:, :, 4]):.4f}")
-                
+                # 3개의 출력을 리스트로 반환 (Output 0, 1, 2)
                 return predictions
             
             except Exception as e:
                 logger.error(f"Inference error: {e}")
-                return np.zeros((1, 25200, 7), dtype=np.float32)
+                return []
         
-        def extract_max_confidence(self, predictions: np.ndarray) -> float:
+        def compute_nms(self, boxes, scores, iou_threshold=0.45):
+            """Simple NMS implementation"""
+            if len(boxes) == 0:
+                return []
+            
+            # Convert to x1, y1, x2, y2
+            # Boxes are already xyxy
+            
+            # OpenCV NMS
+            # cv2.dnn.NMSBoxes expects (x, y, w, h)
+            # boxes are [x1, y1, x2, y2]
+            
+            x = boxes[:, 0]
+            y = boxes[:, 1]
+            w = boxes[:, 2] - boxes[:, 0]
+            h = boxes[:, 3] - boxes[:, 1]
+            
+            # Create list of [x, y, w, h]
+            boxes_xywh = []
+            for i in range(len(boxes)):
+                boxes_xywh.append([int(x[i]), int(y[i]), int(w[i]), int(h[i])])
+                
+            indices = cv2.dnn.NMSBoxes(boxes_xywh, scores.tolist(), self.conf_threshold, iou_threshold)
+            
+            if len(indices) == 0:
+                return []
+                
+            return indices.flatten()
+
+        def postprocess(self, predictions: Union[np.ndarray, List[np.ndarray]]) -> Tuple[List[dict], float]:
             """
-            예측에서 최대 화재 신뢰도 추출
-            
-            **중요**: Sigmoid 정규화를 먼저 적용한 후,
-            정규화된 [0, 1] 범위에서 threshold를 적용합니다.
+            Multi-scale Output Decoding + NMS
+            Returns: (detections, max_confidence, positive_count)
             """
-            if predictions.size == 0 or len(predictions.shape) < 3:
-                return 0.0
+            if not predictions:
+                return [], 0.0, 0
             
-            try:
-                # Shape 확인
-                logger.debug(f"Predictions shape: {predictions.shape}, dtype: {predictions.dtype}")
+            if not isinstance(predictions, list):
+                predictions = [predictions]
                 
-                # UINT8 데이터인 경우 float32로 변환 및 정규화 (0-255 → 0-1)
-                if predictions.dtype == np.uint8:
-                    predictions = predictions.astype(np.float32) / 255.0
-                    logger.debug(f"Converted UINT8 to float32 and normalized to [0, 1]")
-                
-                num_channels = predictions.shape[-1]
-                
-                if num_channels == 7:
-                    # 화재 감지 모델 (2 클래스)
-                    objectness = predictions[0, :, 4]
-                    fire_confidences = predictions[0, :, 5]
-                
-                elif num_channels == 85:
-                    # COCO 모델 (80 클래스) 또는 일반 YOLOv7
-                    objectness = predictions[0, :, 4]
-                    class_confidences = predictions[0, :, 5:]
-                    fire_confidences = np.max(class_confidences, axis=1)
-                
-                else:
-                    logger.warning(f"Unknown output format with {num_channels} channels")
-                    return 0.0
-                
-                # 원본 raw logit 값 분석
-                logger.debug(f"Objectness (RAW logit) - min: {objectness.min():.2f}, max: {objectness.max():.2f}, "
-                           f"mean: {objectness.mean():.2f}")
-                logger.debug(f"Fire confidence (RAW logit) - min: {fire_confidences.min():.2f}, max: {fire_confidences.max():.2f}, "
-                           f"mean: {fire_confidences.mean():.2f}")
-                
-                # ⚠️ 테스트: 아까와 동일하게 RAW LOGIT에 threshold 적용 (Sigmoid 없이)
-                valid_mask = (objectness > self.conf_threshold) & (fire_confidences > self.conf_threshold)
-                
-                num_valid = np.sum(valid_mask)
-                logger.debug(f"Valid detections (RAW logit - objectness > {self.conf_threshold} AND fire_conf > {self.conf_threshold}): {num_valid}")
-                
-                if not np.any(valid_mask):
-                    logger.debug(f"No valid detections (RAW logit mode)")
-                    return 0.0
-                
-                # 유효한 detection의 최대 fire confidence (Sigmoid 후)
-                fire_sigmoid = expit(fire_confidences.astype(np.float64))
-                max_confidence = float(np.max(fire_sigmoid[valid_mask]))
-                logger.debug(f"Max fire confidence (after Sigmoid): {max_confidence:.4f}")
-                
-                return max_confidence
+            all_boxes = []
+            all_scores = []
+            max_conf_global = 0.0
+            total_positive_count = 0
             
-            except Exception as e:
-                logger.warning(f"Error extracting confidence: {e}")
-                return 0.0
+            # Anchors for YOLOv7 (P3, P4, P5)
+            # Strides: 8, 16, 32
+            anchors = {
+                8:  [[12,16], [19,36], [40,28]],
+                16: [[36,75], [76,55], [72,146]],
+                32: [[142,110], [192,243], [459,401]]
+            }
+            
+            input_h, input_w = self.input_size
+            
+            for output in predictions:
+                if output.ndim != 5:
+                    continue
+                    
+                # output shape: [1, 3, H, W, 7]
+                bs, na, h, w, c = output.shape
+                stride = input_h // h
+                
+                if stride not in anchors:
+                    continue
+                    
+                curr_anchors = np.array(anchors[stride])
+                
+                # Grid coordinates
+                grid_y, grid_x = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
+                grid = np.stack((grid_x, grid_y), axis=2).reshape(1, 1, h, w, 2)
+                
+                # Decode
+                # 0-1: x, y (sigmoid * 2 - 0.5 + grid) * stride
+                # 2-3: w, h ((sigmoid * 2) ** 2 * anchor)
+                # 4: obj (sigmoid)
+                # 5: cls (sigmoid)
+                
+                # Apply sigmoid to all
+                out_sigmoid = expit(output)
+
+                # Density Count Logic (Pre-filtering)
+                # Count anchors with Objectness * Class0 > 0.5
+                # Since model saturates to 1.0, this counts 'active' regions
+                raw_scores_map = out_sigmoid[..., 4] * out_sigmoid[..., 5]
+                total_positive_count += np.sum(raw_scores_map > 0.5)
+                
+                # Box coordinates
+                xy = (out_sigmoid[..., 0:2] * 2.0 - 0.5 + grid) * stride
+                wh = (out_sigmoid[..., 2:4] * 2.0) ** 2 * curr_anchors.reshape(1, 3, 1, 1, 2)
+                
+                # Center to TopLeft conversion
+                xy_tl = xy - wh / 2.0
+                xy_br = xy + wh / 2.0
+                
+                boxes = np.concatenate((xy_tl, xy_br), axis=-1) # x1, y1, x2, y2
+                
+                # Confidence
+                obj_conf = out_sigmoid[..., 4]
+                cls_conf = out_sigmoid[..., 5]
+                scores = obj_conf * cls_conf
+                
+                # Filter low scores
+                mask = scores > self.conf_threshold
+                
+                if np.any(mask):
+                    filtered_boxes = boxes[mask]
+                    filtered_scores = scores[mask]
+                    
+                    all_boxes.append(filtered_boxes)
+                    all_scores.append(filtered_scores)
+                    
+                    current_max = np.max(filtered_scores)
+                    if current_max > max_conf_global:
+                        max_conf_global = current_max
+
+            if not all_boxes:
+                return [], max_conf_global, total_positive_count
+                
+            # Concatenate all scales
+            all_boxes = np.concatenate(all_boxes, axis=0)
+            all_scores = np.concatenate(all_scores, axis=0)
+            
+            # NMS
+            indices = self.compute_nms(all_boxes, all_scores)
+            
+            detections = []
+            for idx in indices:
+                box = all_boxes[idx]
+                score = all_scores[idx]
+                detections.append({
+                    'x1': int(box[0]), 'y1': int(box[1]),
+                    'x2': int(box[2]), 'y2': int(box[3]),
+                    'score': float(score)
+                })
+                
+            return detections, max_conf_global, total_positive_count
+
+        def extract_max_confidence(self, predictions: Union[np.ndarray, List[np.ndarray]]) -> float:
+            # This is now handled inside postprocess, wrapper for compatibility if needed
+            _, max_conf = self.postprocess(predictions)
+            return max_conf
         
         def get_time_averaged_confidence(self) -> float:
             """시간 기반 평균 신뢰도 계산"""
@@ -321,12 +400,40 @@ class FireDetectionMonitor:
             frame: np.ndarray,
             current_confidence: float,
             avg_confidence: float,
-            alert_level: str
+            alert_level: str,
+            detections: List[dict] = []
         ) -> np.ndarray:
             """프레임에 정보 및 알림 표시"""
             frame_display = frame.copy()
             h, w = frame_display.shape[:2]
             
+            # --- Draw Detections ---
+            for det in detections:
+                x1, y1, x2, y2 = det['x1'], det['y1'], det['x2'], det['y2']
+                score = det['score']
+                
+                # Scale coordinates if frame size differs from input size (640x640)
+                # But here we assume frame is the original camera frame?
+                # The preprocessing resized it.
+                # Actually, the boxes are in 640x640 coords.
+                # We need to scale them back to frame_display size.
+                
+                scale_x = w / self.input_size[1]
+                scale_y = h / self.input_size[0]
+                
+                x1 = int(x1 * scale_x)
+                y1 = int(y1 * scale_y)
+                x2 = int(x2 * scale_x)
+                y2 = int(y2 * scale_y)
+                
+                # Color based on score
+                color = (0, 0, 255) if score > 0.5 else (0, 255, 255)
+                
+                cv2.rectangle(frame_display, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(frame_display, f"Fire: {score:.2f}", (x1, y1-10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+            # --- Draw Status Info ---
             # 배경 (반투명)
             overlay = frame_display.copy()
             cv2.rectangle(overlay, (0, 0), (w, 100), (0, 0, 0), -1)
@@ -369,7 +476,7 @@ class FireDetectionMonitor:
             alert_msg_short = alert_msg.split('|')[0].strip()
             cv2.putText(
                 frame_display,
-                f"Alert: {alert_msg_short}",
+                f"Alert: {alert_msg_short} (Boxes: {len(detections)})",
                 (10, y_offset),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
@@ -386,10 +493,6 @@ class FireDetectionMonitor:
         def run(self, display: bool = True, output_video: Optional[str] = None):
             """
             실시간 화재 감지 모니터링 실행
-            
-            Args:
-                display: 화면에 표시할지 여부
-                output_video: 결과를 저장할 비디오 파일 경로 (None이면 저장 안 함)
             """
             logger.info("🎬 Starting fire detection monitoring...")
             
@@ -425,11 +528,14 @@ class FireDetectionMonitor:
                     infer_time = time.time() - infer_start
                     inference_times.append(infer_time)
                     
-                    # 신뢰도 추출
-                    current_confidence = self.extract_max_confidence(predictions)
+                    # 후처리 (Decoding + NMS)
+                    detections, max_conf_global, pos_count = self.postprocess(predictions)
                     
+                    # Standard Confidence Logic (No Density Override)
+                    effective_conf = max_conf_global
+
                     # 이력에 저장
-                    self.confidence_history.append(current_confidence)
+                    self.confidence_history.append(effective_conf)
                     self.timestamp_history.append(current_time)
                     
                     # 평균 신뢰도 계산 및 알림 결정
@@ -437,15 +543,22 @@ class FireDetectionMonitor:
                     alert_level = self.determine_alert_level(avg_confidence)
                     
                     # 알림 로그
+
+
                     self.log_alert(avg_confidence, alert_level)
                     
-                    # 프레임에 정보 표시
+                    # 프레임에 정보 표시 (박스 포함)
                     frame_with_info = self.draw_info_on_frame(
                         frame,
-                        current_confidence,
+                        effective_conf,
                         avg_confidence,
-                        alert_level
+                        alert_level,
+                        detections
                     )
+                    
+                    # Draw Density Count Debug Info
+                    cv2.putText(frame_with_info, f"Density Count: {pos_count}", (10, 70), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                     
                     # 화면 표시
                     if display:

@@ -1,0 +1,63 @@
+{
+    "model_name": "v7_proper_int8",
+    "inputs": {
+        "images": [
+            1,
+            3,
+            640,
+            640
+        ]
+    },
+    "output_names": [
+        "output"
+    ],
+    "calibration_num": 1,
+    "calibration_method": "ema",
+    "train_batchsize": 1,
+    "quant_type": "INT8",
+    "num_samples": 2,
+    "default_loader": {
+        "dataset_path": "/users/lota7574/fire_detection/assets",
+        "file_extensions": [
+            "jpg"
+        ],
+        "preprocessings": [
+            {
+                "resize": {
+                    "mode": "pad",
+                    "size": 640,
+                    "pad_location": "edge",
+                    "pad_value": [
+                        114,
+                        114,
+                        114
+                    ]
+                }
+            },
+            {
+                "div": {
+                    "x": 255
+                }
+            },
+            {
+                "convertColor": {
+                    "form": "BGR2RGB"
+                }
+            },
+            {
+                "transpose": {
+                    "axis": [
+                        2,
+                        0,
+                        1
+                    ]
+                }
+            },
+            {
+                "expandDim": {
+                    "axis": 0
+                }
+            }
+        ]
+    }
+}

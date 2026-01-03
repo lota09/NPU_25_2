@@ -177,3 +177,37 @@
   INT8 모델: 51ms/frame (권장)
   FP32 모델: 63ms/frame (검증용)
 ```
+
+---
+
+### 🔴 문제 4: 변별 불가능한 신뢰도 문제 (Confidence ~0.18 고정 또는 Saturation)
+
+#### 1️⃣ 어떤 문제가 있었나
+- 초기 모델 (SiLU, Float32) 실행 시 모든 객체에 대해 신뢰도가 0.18 근처로 매우 낮게 고정됨
+- 대안으로 시도한 **LeakyReLU** 모델은 신뢰도가 1.0으로 포화(Saturation)되어, 오탐지(Room)와 정탐지(Fire)를 점수로 구분 불가능
+- **Density Based Logic** (활성화된 앵커 개수 카운트)이라는 복잡한 우회책을 사용해야 했음
+
+#### 2️⃣ 어떤 시도를 해보았는가
+- **Float32 컴파일**: 정밀도가 높을 것이라 기대했으나, NPU의 SiLU 연산 지원 미비로 오히려 점수가 망가짐 (0.18)
+- **LeakyReLU 교체**: NPU 친화적이지만, 양자화 시 점수 분포가 양극화됨 (0 아니면 1)
+- **Opset 변경**: 11, 14 시도했으나 Segfault 또는 컴파일 에러 발생
+
+#### 3️⃣ 어느 순간 깨달았는가
+- **Golden Example (YOLOV7-2.onnx) 분석**:
+  - 이 모델은 NPU에서 정상적인 점수(0.5~0.6)를 출력하고 있었음
+  - 속성 확인 결과: **Opset 12** + **INT8 Quantization** 사용 중
+- **환경의 중요성**:
+  - 기존 PyTorch 2.9 환경에서는 Opset 12 Export 시 Segfault 발생
+  - **PyTorch 2.0 환경** (yolov7 env)에서 Export 시 Segfault 없이 정상적인 ONNX 그래프 생성 확인
+
+#### 4️⃣ 어떻게 해결했는가
+- **"Golden Path" 조합 발견**:
+  1. **Opset Version**: 12 (SiLU INT8 지원 필수 조건)
+  2. **Quantization**: INT8 (Float32보다 오히려 정확도/호환성 우수)
+  3. **Export Environment**: PyTorch 2.0 (올바른 ONNX 그래프 생성)
+- **결과**:
+  - Fire: 0.49, Room: 0.37, Person: 0.65
+  - 0~1 사이의 정상적인 확률 분포 확보 성공
+  - 1.0으로 포화되지 않아 Threshold 기반 필터링 가능해짐 (Density Logic 불필요)
+
+**결론**: NPU에서는 "Float가 더 정확하다"는 통념이 틀릴 수 있음. **지원되는 Opset(12)과 INT8 최적화**가 정답이었음.

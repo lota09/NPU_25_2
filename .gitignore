@@ -19,11 +19,18 @@ logs/
 !monoculus-app/public/images/*.svg
 !monoculus-app/public/images/intruder.png
 
-# Models
-*.dxnn
-*.pt
-*.pth
-
 # Videos
 *.avi
 *.mp4
+
+# Large Files (ignored)
+fire_detection/models/v7_opset12_single.onnx
+fire_detection/compiler_troubleshooting/model_zoo_golden/YOLOV7-2.onnx
+
+assets/
+trash*
+calibration_dataset
+.agent/
+compiler_troubleshooting
+web_guide/
+yolov7/
