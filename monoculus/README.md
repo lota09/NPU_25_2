@@ -2,9 +2,25 @@
 
 이 문서는 **Monoculus** 시스템의 실행 방법, 구조, 기능 및 설정 방법을 팀원들에게 안내하기 위해 작성되었습니다.
 
-## 1. 실행 및 배포 방법
+### 사전 준비 (최초 1회)
 
-### 배포 방법 (초기 설정 및 업데이트 시)
+시스템 실행 전, 필요한 파이썬 패키지를 설치해야 합니다.
+
+```bash
+cd ~/monoculus
+pip install -r requirements.txt
+```
+
+**⚠ 트러블슈팅: 윈도우에서 복사한 파일 줄바꿈 문제 해결**
+윈도우에서 파일을 수정 후 오렌지 파이로 옮겼을 때, 실행 스크립트(`run_monoculus.sh`)에서 `\r` 관련 에러가 발생할 수 있습니다. 아래 명령어로 해결하세요.
+
+```bash
+# 스크립트의 윈도우식 줄바꿈(\r\n)을 유닉스식(\n)으로 변환
+sed -i 's/\r$//' run_monoculus.sh
+chmod +x run_monoculus.sh
+```
+
+### 실행 방법 (`run_monoculus.sh`)
 
 Monoculus 시스템은 `monoculus` 디렉토리 전체를 오렌지 파이(Orange Pi)로 전송하여 실행합니다.
 
