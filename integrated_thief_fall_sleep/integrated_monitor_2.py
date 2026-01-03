@@ -16,7 +16,10 @@ import math
 import subprocess
 import threading
 import traceback # Debug
+import argparse
+import logging
 from collections import deque, Counter
+from concurrent.futures import ThreadPoolExecutor
 from scipy.special import expit # For Fire Detector
 
 # DeepX SDK Check
@@ -517,6 +520,7 @@ class SystemManager:
         self.known_ips = {} # MAC -> Last Known IP
         self.last_home_time = time.time() # Grace period logic
         self.ha_data = None # Data from Home Assistant
+        self.executor = ThreadPoolExecutor(max_workers=2) # For parallel inference
         
         if MQTT_AVAILABLE:
             try:
@@ -756,6 +760,7 @@ class SystemManager:
         fps_start = time.time()
         fps_cnt = 0
         fps = 0
+        npu_log_done = False # [Modified] Print concurrency status only once
         self.last_status = "UPRIGHT" # 초기 상태
         
         while True:
@@ -771,6 +776,8 @@ class SystemManager:
             move_count = 0
             fall_alert = False
             intruder_alert = False
+            i_conf = 0.0
+            ratio = 0.0
             if self.engine:
                  # Standard Resize (For Intruder/Pose) -- will handle inside FireDetector separately
                  buf = cv2.resize(frame, (640, 640))
@@ -794,64 +801,83 @@ class SystemManager:
                              if fall_alert:
                                  cv2.putText(frame, f"FALL ({ftype})", (50, 200), 1, 2, (0,0,255), 3)
                      else:
-                         # [AWAY MODE] Dual Monitoring (Alternating)
+                         # [AWAY MODE] Parallel Monitoring (Fire & Intruder)
+                         # Use ThreadPoolExecutor to request concurrent NPU access (if driver supports it)
                          
-                         # 1. Fire Detection (Odd Frames) -> NOW PRIMARY for Debug
-                         # 1. Fire Detection (Odd Frames)
-                         if self.engine_fire and (fps_cnt % 2 != 0):
-                             # Preprocess for Fire (Letterbox)
-                             fire_buf = self.fire_detector.preprocess_frame(frame)
-                             fire_input = [np.frombuffer(fire_buf, dtype=np.uint8)]
+                         t_submit = time.time()
+                         future_fire = self.executor.submit(self._run_fire_task, frame)
+                         future_intruder = self.executor.submit(self._run_intruder_task, frame, curr_time)
+                         
+                         # Wait for results
+                         fdets, f_results, t_fire = future_fire.result()
+                         # Unpack Intruder Results (dets, is_intruder, should_a, conf, duration)
+                         i_res = future_intruder.result()
+                         intruder_data = i_res[:4]
+                         t_intruder = i_res[4]
+                         
+                         t_wall = time.time() - t_submit
+                         
+                         # [Concurrency Check]
+                         if t_wall > 0:
+                             sum_time = t_fire + t_intruder
+                             ratio = sum_time / t_wall
                              
-                             outputs = self.engine_fire.run(fire_input)
-                             # PASS FULL OUTPUTS LIST, NOT outputs[0]
-                             fdets, f_results = self.fire_detector.process(outputs, frame.shape)
-                             
-                             # Draw Fire/Smoke Detections
+                             # 5초마다 또는 특정 조건에서 출력 (여기서는 매번 찍으면 너무 빠르므로 1초 로직에서 처리하거나 지금은 디버깅용으로 매 프레임 찍되, 텍스트 오버레이로? 
+                             # 사용자 요청: "디버그 메시지로 출력하게 해주면 안돼?" -> 쉘 출력
+                             # 1초에 한번만 출력하도록 제한
+                             if curr_time - last_mqtt_time > 1.0: # Reuse existing timer or separate?
+                                  # Let's print only if ratio indicates Serial heavily OR Parallel clearly?
+                                  # User wants explicit info.
+                                  pass # Printed below in 1s loop
+
+                         # --- 1. Process Fire Results ---
+                         if fdets:
                              for det in fdets:
                                  name = det.get('class_name', 'Fire')
                                  color = (0,0,255) if name == 'Fire' else (200,200,200)
                                  self._draw_overlay(frame, det['bbox'], f"{name} {det['score']:.2f}", color)
-                             
-                             # Draw Status (Fire & Smoke)
-                             y_off = 80
-                             for cls_id, res in f_results.items():
-                                 name = res['name']
-                                 level = res['level']
-                                 avg = res['avg_conf']
-                                 color = (0,0,255) if name == 'Fire' else (200,200,200)
-                                 
-                                 cv2.putText(frame, f"{name}: {level} ({avg:.2f})", (10, y_off), 1, 1.5, color, 2)
-                                 y_off += 40
-                                 
-                                 # MQTT Alert
-                                 if res['is_alert'] and self.mqtt:
-                                     topic_suffix = f"{name.upper()}_DETECTED_{level}"
-                                     self.mqtt.publish(CONFIG["mqtt"]["topic"], topic_suffix)
-                                     print(f"🔥 SENT {name.upper()} ALERT: {level} (Avg: {avg:.2f})")
+                         
+                         if f_results:
+                                 y_off = 80
+                                 for cls_id, res in f_results.items():
+                                     name = res['name']
+                                     level = res['level']
+                                     avg = res['avg_conf']
+                                     color = (0,0,255) if name == 'Fire' else (200,200,200)
+                                     
+                                     cv2.putText(frame, f"{name}: {level} ({avg:.2f})", (10, y_off), 1, 1.5, color, 2)
+                                     y_off += 40
+                                     
+                                     if res['is_alert']:
+                                         print(f"🔥 ALERT CONDITION: {name} {level} (Avg: {avg:.2f})")
+                                         if self.mqtt:
+                                             topic_suffix = f"{name.upper()}_DETECTED_{level}"
+                                             self.mqtt.publish(CONFIG["mqtt"]["topic"], topic_suffix)
+                                             print(f"   -> MQTT SENT: {topic_suffix}")
 
-                         # 2. Intruder Detection (Even Frames)
-                         else: # if not fire or even frame
-                             outputs = self.engine.run(input_data)
-                             dets = self.parse_yolov8(outputs[0], frame.shape)
+                         # --- 2. Process Intruder Results ---
+                         if intruder_data:
+                             i_dets, i_intruder, i_should, i_conf = intruder_data
                              
-                             intruder, should_a, conf = self.thief_detector.process(dets, curr_time)
-                             
-                             for d in dets:
+                             for d in i_dets:
                                  self._draw_overlay(frame, d['bbox'], f"Person {d['conf']:.2f}", (0,0,255))
                              
-                             if intruder:
-                                 intruder_alert = True # Set for payload
-                                 self._draw_overlay(frame, (10,10,200,60), f"INTRUDER! ({conf:.2f})", (0,0,255))
-                                 if should_a and self.mqtt:
-                                      self.mqtt.publish(CONFIG["mqtt"]["topic"], "INTRUDER_DETECTED")
-                                      print(f"🚨 SENT INTRUDER ALERT (Conf: {conf:.2f})")
+                             if i_intruder:
+                                 intruder_alert = True
+                                 self._draw_overlay(frame, (10,10,200,60), f"INTRUDER! ({i_conf:.2f})", (0,0,255))
+                                 if i_should:
+                                      print(f"🚨 INTRUDER ALERT CONDITION (Conf: {i_conf:.2f})")
+                                      if self.mqtt:
+                                           payload = "INTRUDER_DETECTED"
+                                           self.mqtt.publish(CONFIG["mqtt"]["topic"], payload)
+                                           print(f"   -> MQTT SENT: {payload}")
                              else:
-                                 cv2.putText(frame, f"Monitoring... (Intruder AVG: {conf:.2f})", (10, 50), 1, 1, (255,255,0), 2)
+                                 cv2.putText(frame, f"Monitoring... (Intruder AVG: {i_conf:.2f})", (10, 50), 1, 1, (255,255,0), 2)
+                                 
                  except Exception: 
                      print("🚨 RUNTIME ERROR IN LOOP:")
                      traceback.print_exc()
-                     pass
+
 
             # [복구] 1초 주기 상태 전송
             if self.mqtt and (curr_time - last_mqtt_time > 1.0):
@@ -876,8 +902,17 @@ class SystemManager:
                 # 1초마다 상태 출력
                 if is_home:
                     print(f"🏠 [HOME] FPS:{fps:.1f} | Status: {sleep_status} | Moves: {move_count}")
-                elif intruder_alert and res:
-                    print(f"🚨 [AWAY] INTRUDER DETECTED! Confidence: {res[0]['conf']:.2f}")
+                else: 
+                    # AWAY Mode Status - Print ONCE
+                    if not npu_log_done and ratio > 0:
+                        status = "PARALLEL (OK)" if ratio > 1.1 else "SERIAL (Queueing)"
+                        msg = f"🚨 [AWAY] FPS:{fps:.1f} | NPU: {status} | Overlap Ratio: {ratio:.2f}"
+                        if ratio <= 1.1: msg += " [Warning: Serial Execution]"
+                        print(msg)
+                        npu_log_done = True
+                    
+                    if intruder_alert:
+                        print(f"   >>> INTRUDER DETECTED! Confidence: {i_conf:.2f}")
 
             # [Alert Log] - 즉시 출력 (Fall은 비상상황이므로 즉시)
             if is_home and fall_alert:
@@ -902,6 +937,37 @@ class SystemManager:
                 cv2.line(frame, (int(k1[0]),int(k1[1])), (int(k2[0]),int(k2[1])), (0,255,0), 2)
         for k in kpts:
             if k[2]>0.3: cv2.circle(frame, (int(k[0]),int(k[1])), 4, (0,0,255), -1)
+
+    def _run_fire_task(self, frame):
+        t0 = time.time()
+        try:
+             if not self.engine_fire: return [], {}, 0.0
+             fire_buf = self.fire_detector.preprocess_frame(frame)
+             fire_input = [np.frombuffer(fire_buf, dtype=np.uint8)]
+             outputs = self.engine_fire.run(fire_input)
+             res = self.fire_detector.process(outputs, frame.shape)
+             return res[0], res[1], (time.time() - t0)
+        except:
+             traceback.print_exc()
+             return [], {}, 0.0
+
+    def _run_intruder_task(self, frame, curr_time):
+        t0 = time.time()
+        try:
+             # Resize carried out inside engine run usually? No, input_data preparation
+             # Need to prepare input data inside thread or before?
+             # 'input_data' provided in run() loop was common. Let's recreate it here to be safe/independent.
+             buf = cv2.resize(frame, (640, 640))
+             buf = cv2.cvtColor(buf, cv2.COLOR_BGR2RGB).tobytes()
+             input_data = [np.frombuffer(buf, dtype=np.uint8)]
+             
+             outputs = self.engine.run(input_data)
+             dets = self.parse_yolov8(outputs[0], frame.shape)
+             intruder, should_a, conf = self.thief_detector.process(dets, curr_time)
+             return (dets, intruder, should_a, conf, time.time() - t0)
+        except:
+             traceback.print_exc()
+             return ([], False, False, 0.0, 0.0)
 
 if __name__ == "__main__":
     SystemManager().run()
