@@ -16,6 +16,9 @@ CORS(app)
 
 # Global variables to store real-time data from monitor script
 system_state = {
+    'npu_connected': False,
+    'last_heartbeat': 0, # Timestamp for connection check
+    
     'is_home': True,
     'last_update': None,
     'fps': 0,
@@ -55,7 +58,7 @@ system_state = {
 
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-IMAGE_DIR = os.path.expanduser("~/monoculus-app/public/images")
+IMAGE_DIR = os.path.join(BASE_DIR, "static", "images")
 if not os.path.exists(IMAGE_DIR):
     os.makedirs(IMAGE_DIR, exist_ok=True)
 
@@ -67,6 +70,17 @@ def index():
 @app.route('/api/status', methods=['GET'])
 def get_status():
     """Get current system status for frontend"""
+    global system_state
+    
+    # Calculate connection status based on heartbeat
+    now = datetime.now().timestamp()
+    if now - system_state['last_heartbeat'] > 15: # 15s timeout
+        system_state['npu_connected'] = False
+        system_state['status'] = 'DISCONNECTED'
+        system_state['fps'] = 0
+    else:
+        system_state['npu_connected'] = True
+        
     return jsonify(system_state)
 
 @app.route('/api/update', methods=['POST'])
@@ -78,10 +92,14 @@ def update_data():
         if not data:
             return jsonify({'error': 'No data provided'}), 400
             
+        # Update heartbeat
+        system_state['last_heartbeat'] = datetime.now().timestamp()
+        
         # Update system state based on what was received
         for key in data:
             if key in system_state:
                 if isinstance(system_state[key], dict) and isinstance(data[key], dict):
+                    # Recursive update for nested dicts (fire, intruder, fall)
                     system_state[key].update(data[key])
                 else:
                     system_state[key] = data[key]
@@ -95,10 +113,17 @@ def update_data():
 def reset_system():
     """Reset counters"""
     global system_state
-    system_state['fire']['detected'] = False
-    system_state['intruder']['detected'] = False
-    system_state['fall']['detected'] = False
+    
+    # Only reset sticky counters, status should be auto-synced by NPU 
     system_state['sleep']['toss_turn_count'] = 0
+    
+    # Force reset alerts only if NPU is disconnected (otherwise NPU will overwrite)
+    now = datetime.now().timestamp()
+    if now - system_state['last_heartbeat'] > 15:
+        system_state['fire']['detected'] = False
+        system_state['intruder']['detected'] = False
+        system_state['fall']['detected'] = False
+        
     return jsonify({'message': 'Reset successful'})
 
 @app.route('/images/<path:filename>')

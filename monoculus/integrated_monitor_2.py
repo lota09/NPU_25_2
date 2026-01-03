@@ -74,7 +74,7 @@ FULL_SKELETON = [
 ]
 
 # Web UI Paths
-WEB_IMAGE_DIR = os.path.expanduser("~/monoculus-app/public/images")
+WEB_IMAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "images")
 if not os.path.exists(WEB_IMAGE_DIR):
     os.makedirs(WEB_IMAGE_DIR, exist_ok=True)
 
@@ -84,11 +84,20 @@ class DataPusher:
         self.last_push_time = 0
         
     def push(self, data):
-        """Asynchronous HTTP push to backend"""
+        """Asynchronous HTTP push to backend with Error Logging"""
         def _target():
             try:
-                requests.post(f"{self.url}/api/update", json=data, timeout=0.5)
-            except: pass
+                # [DEBUG]
+                # print(f"📡 Pushing data: {list(data.keys())}") 
+                resp = requests.post(f"{self.url}/api/update", json=data, timeout=2.0)
+                # if resp.status_code != 200:
+                #     print(f"⚠️ Push Failed: {resp.status_code} {resp.text}")
+            except requests.exceptions.Timeout:
+                # print("⚠️ Push Timeout")
+                pass
+            except Exception as e:
+                # Detailed error for debugging connection issues
+                print(f"❌ Push Error ({self.url}): {e}")
         threading.Thread(target=_target, daemon=True).start()
 
     def save_and_push_image(self, frame, event_type, filename):
@@ -336,9 +345,19 @@ class FireDetector:
     def __init__(self):
         # Config Params
         t_config = CONFIG.get("thresholds", {}).get("fire", {})
-        # Note: thresholds in config might need update if we want separate controls, 
-        # but for now we follow the hardcoded levels in fire_detection_monitor.py or mix them.
-        # User requested consistency with fire_detection_monitor.py
+        levels = t_config.get("confidence_levels", {"LOW": 0.35, "MEDIUM": 0.50, "HIGH": 0.65})
+        
+        # Build Level Ranges dynamically
+        # MONITORING: 0 ~ LOW
+        # LOW: LOW ~ MEDIUM
+        # MEDIUM: MEDIUM ~ HIGH
+        # HIGH: HIGH ~ 1.01
+        self.ALERT_LEVEL = {
+            'MONITORING': (0.00, levels['LOW']),
+            'LOW': (levels['LOW'], levels['MEDIUM']),
+            'MEDIUM': (levels['MEDIUM'], levels['HIGH']),
+            'HIGH': (levels['HIGH'], 1.01)
+        }
         
         time_window = t_config.get("time_window", 3.0)
         self.history_len = int(15 * time_window) # 15 FPS (Alternating)
@@ -354,7 +373,7 @@ class FireDetector:
         }
         
         self.alert_cooldown = 2.0
-        self.levels = {"LOW": 0.35, "MEDIUM": 0.50, "HIGH": 0.65} # For compatibility with config if needed
+        self.levels = levels # Usage ref
         self.conf_thresh = self.levels["LOW"]
         self.input_size = (640, 640)
         
@@ -564,6 +583,13 @@ class SystemManager:
         self.macs = [m.upper() for m in CONFIG["trusted_devices"]]
         self.known_ips = {} # MAC -> Last Known IP
         self.ha_data = None # Data from Home Assistant
+        
+        # Sticky Alert State (for Heartbeat persistence)
+        self.sticky_fire = {'detected': False, 'type': 'Fire', 'level': 'MONITORING', 'time': 0, 'conf': 0.0}
+        
+        # Image Push Throttling
+        self.last_img_push = 0
+    
         self.executor = ThreadPoolExecutor(max_workers=2) # For parallel inference
         
         # [Add] Robust Presence Detector
@@ -916,9 +942,21 @@ class SystemManager:
                                              self.mqtt.publish(CONFIG["mqtt"]["topic"], topic_suffix)
                                              print(f"   -> MQTT SENT: {topic_suffix}")
                                          
-                                         # Web UI Push
-                                         self.pusher.save_and_push_image(frame, "fire", f"last_{name.lower()}.jpg")
-                                         self.pusher.push({"fire": {"detected": True, "type": name, "level": level, "conf": avg}})
+                                         # Web UI Push (Throttled to 1s)
+                                         if time.time() - self.last_img_push > 1.0:
+                                             self.pusher.save_and_push_image(frame, "fire", f"last_{name.lower()}.jpg")
+                                             self.last_img_push = time.time()
+                                         
+                                         self.pusher.push({"fire": {"detected": True, "type": name, "level": level, "conf": float(avg)}})
+                                         
+                                         # Update Sticky State
+                                         self.sticky_fire = {
+                                             'detected': True, 
+                                             'type': name, 
+                                             'level': level, 
+                                             'time': time.time(),
+                                             'conf': float(avg)
+                                         }
 
                          # --- 2. Process Intruder Results ---
                          if intruder_data:
@@ -942,8 +980,11 @@ class SystemManager:
                                             print(f"   -> MQTT SENT: {payload}")
                                        
                                        # Web UI Push
-                                       self.pusher.save_and_push_image(frame, "intruder", "last_intruder.jpg")
-                                       self.pusher.push({"intruder": {"detected": True, "conf": i_conf}})
+                                       if time.time() - self.last_img_push > 1.0:
+                                            self.pusher.save_and_push_image(frame, "intruder", "last_intruder.jpg")
+                                            self.last_img_push = time.time()
+                                            
+                                       self.pusher.push({"intruder": {"detected": True, "conf": float(i_conf)}})
                               else:
                                   pass # Displayed persistently above
                                  
@@ -952,28 +993,48 @@ class SystemManager:
                      traceback.print_exc()
 
 
-            # [복구] 1초 주기 상태 전송
-            if self.mqtt and (curr_time - last_mqtt_time > 1.0):
-                payload = {
-                    "mode": target,
-                    "status": sleep_status,
-                    "moves": move_count,
-                    "fall": fall_alert,
-                    "intruder": intruder_alert,
-                    "ha": self.ha_data # Forward HA data to App
-                }
-                self.mqtt.publish(CONFIG["mqtt"]["topic"], json.dumps(payload))
+            # [General Status Push - 1s Interval]
+            if curr_time - last_mqtt_time > 1.0:
+                # 1. MQTT Push (Only if connected)
+                if self.mqtt:
+                    payload = {
+                        "mode": target,
+                        "status": sleep_status,
+                        "moves": move_count,
+                        "fall": fall_alert,
+                        "intruder": intruder_alert,
+                        "ha": self.ha_data 
+                    }
+                    try:
+                        self.mqtt.publish(CONFIG["mqtt"]["topic"], json.dumps(payload))
+                    except: pass
                 
-                # [Add] Web UI General Status Push
+                # 2. Web UI Push (Always)
                 web_payload = {
                     "is_home": is_home,
                     "fps": round(fps, 1),
                     "status": "MONITORING" if not (fall_alert or intruder_alert) else "ALERT",
+                    # Explicit states for Auto-Reset
+                    "fire": {
+                        "detected": self.sticky_fire['detected'] if (curr_time - self.sticky_fire['time'] < 5.0) else False,
+                        "type": self.sticky_fire['type'],
+                        "level": self.sticky_fire['level'] if (curr_time - self.sticky_fire['time'] < 5.0) else "MONITORING",
+                        "conf": self.sticky_fire['conf'] if (curr_time - self.sticky_fire['time'] < 5.0) else 0.0
+                    }, 
+                    "intruder": {
+                        "detected": intruder_alert,
+                        "conf": i_conf
+                    },
+                    "fall": {
+                        "detected": fall_alert,
+                        "type": ftype if fall_alert else None
+                    },
                     "sleep": {
                         "is_monitoring": is_home,
                         "toss_turn_count": move_count,
-                        "temperature": 23.5 + np.random.uniform(-0.5, 0.5) # Simulated for now
-                    }
+                        "temperature": 23.5 + np.random.uniform(-0.5, 0.5) 
+                    },
+                    "timestamp": datetime.now().strftime('%H:%M:%S') # Heartbeat
                 }
                 self.pusher.push(web_payload)
                 
