@@ -50,10 +50,15 @@ system_state = {
     'sleep': {
         'is_monitoring': False,
         'toss_turn_count': 0,
-        'temperature': 23.5,
+        'temperature': 21.0,
         'positions': [],
-        'start_time': None
-    }
+        'start_time': None,
+        'posture': None,
+        'ha_data': None
+    },
+    
+    # System Logs (Recent 50)
+    'logs': []
 }
 
 # Paths
@@ -103,6 +108,17 @@ def update_data():
                     system_state[key].update(data[key])
                 else:
                     system_state[key] = data[key]
+        
+        # Handle new Log entry
+        if 'log' in data:
+            log_entry = data['log']
+            # Add unique ID if not present
+            if 'id' not in log_entry:
+                log_entry['id'] = int(datetime.now().timestamp() * 1000)
+            
+            system_state['logs'].insert(0, log_entry) # Add to top
+            if len(system_state['logs']) > 50:
+                system_state['logs'].pop()
         
         system_state['last_update'] = datetime.now().strftime('%H:%M:%S')
         return jsonify({'message': 'Data updated successfully'})

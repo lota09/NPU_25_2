@@ -240,10 +240,16 @@ class SleepMonitor:
         self.conf_thresh = CONFIG["thresholds"]["confidence"]
         self.last_reset_date = datetime.now().date()  # 일일 리셋용
         
-    def _should_count_movement(self):
-        """밤 시간(22:00~08:00)만 뒤척임 카운트"""
-        current_hour = datetime.now().hour
-        return current_hour >= 22 or current_hour < 8
+    def _should_count_movement(self, ha_data):
+        """DEEP 모드일 때만 뒤척임 카운트"""
+        if not ha_data: return False
+        
+        # Check status safely
+        status = str(ha_data.get('status', ''))
+        if not status and 'attributes' in ha_data:
+            status = str(ha_data['attributes'].get('status', ''))
+            
+        return 'DEEP' in status.upper()
         
     def _check_daily_reset(self):
         """자정이 지나면 카운터 리셋"""
@@ -253,7 +259,7 @@ class SleepMonitor:
             self.moves = 0
             self.last_reset_date = today
         
-    def process(self, det):
+    def process(self, det, ha_data=None):
         kpts = det['keypoints']
         bbox = det['bbox']
         
@@ -288,7 +294,7 @@ class SleepMonitor:
         avg_y = sum(c[1] for c in self.center_history) / len(self.center_history)
         current_avg = (avg_x, avg_y)
         
-        if self.prev_center and self._should_count_movement():
+        if self.prev_center and self._should_count_movement(ha_data):
             dist = math.sqrt((self.prev_center[0]-current_avg[0])**2 + (self.prev_center[1]-current_avg[1])**2)
             if dist > self.move_thresh: 
                 self.moves += 1
@@ -602,6 +608,8 @@ class SystemManager:
         self.macs = [m.upper() for m in CONFIG["trusted_devices"]]
         self.known_ips = {} # MAC -> Last Known IP
         self.ha_data = None # Data from Home Assistant
+        self.current_temperature = 21.0 # Demo Default Temp
+
         
         # Sticky Alert State (for Heartbeat persistence)
         self.sticky_fire = {'detected': False, 'type': 'Fire', 'level': 'MONITORING', 'time': 0, 'conf': 0.0}
@@ -644,8 +652,33 @@ class SystemManager:
     def _on_mqtt_message(self, client, userdata, msg):
         try:
             payload = msg.payload.decode('utf-8')
-            self.ha_data = json.loads(payload)
-            print(f"📩 HA Update: {self.ha_data}")
+            data = json.loads(payload)
+            self.ha_data = data
+            print(f"📩 HA Update: {data}")
+            
+            # 1. Update Temperature
+            if 'temp' in data:
+                try:
+                    self.current_temperature = float(data['temp'])
+                except: pass
+                
+            # 2. Check for Log Events
+            # HA sends: {"msg": "Sleep Mode Started", "status": "SLEEP_ENTRY", ...}
+            if 'msg' in data and 'status' in data:
+                print(f"📝 Log Event Detected: {data['msg']}") # [DEBUG]
+                log_entry = {
+                    "log": {
+                        "time": data.get('time', datetime.now().strftime('%H:%M:%S')),
+                        "message": data['msg'],
+                        "type": data['status'] # SLEEP_ENTRY, DEEP_SLEEP, WAKE_UP, etc.
+                    }
+                }
+                self.pusher.push(log_entry)
+            else:
+                # [DEBUG] Check why it failed if it looked relevant
+                if 'msg' in data:
+                    print(f"⚠️ Msg found but no status: {list(data.keys())}")
+                
         except: pass
 
     def check_presence(self):
@@ -904,7 +937,7 @@ class SystemManager:
                          res.sort(key=lambda x: x['area'], reverse=True)
                          if res:
                              user = res[0]
-                             sleep_status, move_count = self.sleep_monitor.process(user)
+                             sleep_status, move_count = self.sleep_monitor.process(user, self.ha_data)
                              self.last_status = sleep_status
                              
                              fall_alert, ftype = self.fall_detector.process(0, user['keypoints'], curr_time)
@@ -1059,7 +1092,9 @@ class SystemManager:
                     "sleep": {
                         "is_monitoring": is_home,
                         "toss_turn_count": move_count,
-                        "temperature": 23.5 + np.random.uniform(-0.5, 0.5) 
+                        "temperature": self.current_temperature,
+                        "posture": sleep_status,
+                        "ha_data": self.ha_data
                     },
                     "timestamp": datetime.now().strftime('%H:%M:%S') # Heartbeat
                 }

@@ -1,0 +1,43 @@
+# Loads default set of integrations. Do not remove.
+default_config:
+
+# Load frontend themes from the themes folder
+frontend:
+  themes: !include_dir_merge_named themes
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+# [설정 1] 데모 모드 (가상 에어컨용)
+demo:
+
+# [설정 2] MQTT 센서 (Orange Pi 데이터 수신)
+mqtt:
+  sensor:
+    - name: "수면 상태"
+      state_topic: "home/security"
+      value_template: "{{ value_json.status }}"
+
+    - name: "뒤척임 횟수"
+      state_topic: "home/security"
+      unit_of_measurement: "회"
+      value_template: "{{ value_json.moves }}"
+      state_class: measurement # ★ 중요: 숫자로 인식하게 함
+
+# [설정 3] 통계 센서 (최근 10분 변화량)
+sensor:
+  - platform: statistics
+    name: "최근 10분 뒤척임"
+    entity_id: sensor.dwiceogim_hoessu
+    state_characteristic: change
+    max_age:
+      minutes: 10
+    sampling_size: 100
+    precision: 0
+
+# [설정 4] 숙면 모드 상태 플래그
+input_boolean:
+  deep_sleep_mode:
+    name: "Deep Sleep Mode"
+    icon: mdi:bed-clock
