@@ -48,6 +48,16 @@ class FireDetectionMonitor:
             'HIGH': (0.65, 1.00, '🔴 긴급 대피')
         }
         
+        # Class Definitions
+        CLASS_NAMES = {
+            0: 'Fire',
+            1: 'Smoke'
+        }
+        CLASS_COLORS = {
+            0: (0, 0, 255),    # Red for Fire
+            1: (200, 200, 200) # Grey for Smoke
+        }
+        
         # LeakyReLU Density Filter Config
         DENSITY_THRESHOLD = 800  # Fire > 1800, Room < 500. Margin > 500. Safe 800.
         
@@ -86,13 +96,17 @@ class FireDetectionMonitor:
             self.fps = 30
             self._init_video_capture()
             
-            # 신뢰도 이력 (최대 시간 윈도우에 해당하는 프레임 수)
-            self.confidence_history = deque(maxlen=int(self.fps * self.time_window))
-            self.timestamp_history = deque(maxlen=int(self.fps * self.time_window))
+            # 신뢰도 이력 (Class별 분리)
+            self.conf_history = {
+                0: deque(maxlen=int(self.fps * self.time_window)), # Fire
+                1: deque(maxlen=int(self.fps * self.time_window))  # Smoke
+            }
             
-            # 상태 추적
-            self.current_alert_level = 'MONITORING'
-            self.last_alert_time = 0
+            # 상태 추적 (Class별 분리)
+            self.alert_status = {
+                0: {'level': 'MONITORING', 'last_time': 0},
+                1: {'level': 'MONITORING', 'last_time': 0}
+            }
             self.alert_duration = 2.0  # 알림 지속 시간 (초)
             
             logger.info(f"Fire Detection Monitor initialized")
@@ -251,18 +265,19 @@ class FireDetectionMonitor:
 
         def postprocess(self, predictions: Union[np.ndarray, List[np.ndarray]]) -> Tuple[List[dict], float]:
             """
-            Multi-scale Output Decoding + NMS
-            Returns: (detections, max_confidence, positive_count)
+            Multi-scale Output Decoding + NMS (Updated for Multi-Class)
+            Returns: (detections, max_conf_per_class, positive_count)
             """
             if not predictions:
-                return [], 0.0, 0
+                return [], {0: 0.0, 1: 0.0}, 0
             
             if not isinstance(predictions, list):
                 predictions = [predictions]
                 
             all_boxes = []
             all_scores = []
-            max_conf_global = 0.0
+            all_classes = []
+            max_conf_map = {0: 0.0, 1: 0.0}
             total_positive_count = 0
             
             # Anchors for YOLOv7 (P3, P4, P5)
@@ -293,82 +308,93 @@ class FireDetectionMonitor:
                 grid = np.stack((grid_x, grid_y), axis=2).reshape(1, 1, h, w, 2)
                 
                 # Decode
-                # 0-1: x, y (sigmoid * 2 - 0.5 + grid) * stride
-                # 2-3: w, h ((sigmoid * 2) ** 2 * anchor)
-                # 4: obj (sigmoid)
-                # 5: cls (sigmoid)
+                # 0-1: x, y
+                # 2-3: w, h
+                # 4: obj
+                # 5: Class 0 (Fire)
+                # 6: Class 1 (Smoke) - IF AVAILABLE
                 
-                # Apply sigmoid to all
+                # Apply sigmoid
                 out_sigmoid = expit(output)
 
-                # Density Count Logic (Pre-filtering)
-                # Count anchors with Objectness * Class0 > 0.5
-                # Since model saturates to 1.0, this counts 'active' regions
-                raw_scores_map = out_sigmoid[..., 4] * out_sigmoid[..., 5]
-                total_positive_count += np.sum(raw_scores_map > 0.5)
-                
                 # Box coordinates
                 xy = (out_sigmoid[..., 0:2] * 2.0 - 0.5 + grid) * stride
                 wh = (out_sigmoid[..., 2:4] * 2.0) ** 2 * curr_anchors.reshape(1, 3, 1, 1, 2)
-                
-                # Center to TopLeft conversion
                 xy_tl = xy - wh / 2.0
                 xy_br = xy + wh / 2.0
+                boxes = np.concatenate((xy_tl, xy_br), axis=-1)
                 
-                boxes = np.concatenate((xy_tl, xy_br), axis=-1) # x1, y1, x2, y2
-                
-                # Confidence
+                # Confidence & Classes
                 obj_conf = out_sigmoid[..., 4]
-                cls_conf = out_sigmoid[..., 5]
-                scores = obj_conf * cls_conf
                 
-                # Filter low scores
-                mask = scores > self.conf_threshold
+                # Iterate over classes (0: Fire, 1: Smoke)
+                # Ensure channel count supports it
+                num_classes = c - 5
                 
-                if np.any(mask):
-                    filtered_boxes = boxes[mask]
-                    filtered_scores = scores[mask]
+                for cls_id in range(num_classes):
+                    if cls_id > 1: break # Only care about Fire(0) and Smoke(1)
                     
-                    all_boxes.append(filtered_boxes)
-                    all_scores.append(filtered_scores)
+                    cls_conf = out_sigmoid[..., 5 + cls_id]
+                    scores = obj_conf * cls_conf
                     
-                    current_max = np.max(filtered_scores)
-                    if current_max > max_conf_global:
-                        max_conf_global = current_max
+                    # Update Max Conf (Raw)
+                    current_max = np.max(scores)
+                    if current_max > max_conf_map.get(cls_id, 0.0):
+                        max_conf_map[cls_id] = current_max
+                    
+                    # Filter
+                    mask = scores > self.conf_threshold
+                    if np.any(mask):
+                        all_boxes.append(boxes[mask])
+                        all_scores.append(scores[mask])
+                        all_classes.append(np.full_like(scores[mask], cls_id, dtype=np.int32))
 
             if not all_boxes:
-                return [], max_conf_global, total_positive_count
+                return [], max_conf_map, total_positive_count
                 
-            # Concatenate all scales
+            # Concatenate
             all_boxes = np.concatenate(all_boxes, axis=0)
             all_scores = np.concatenate(all_scores, axis=0)
+            all_classes = np.concatenate(all_classes, axis=0)
             
-            # NMS
-            indices = self.compute_nms(all_boxes, all_scores)
+            # Simple NMS (Class-agnostic or per-class? Let's do Class-agnostic for safety or per-class?)
+            # Usually per-class is better.
             
             detections = []
-            for idx in indices:
-                box = all_boxes[idx]
-                score = all_scores[idx]
-                detections.append({
-                    'x1': int(box[0]), 'y1': int(box[1]),
-                    'x2': int(box[2]), 'y2': int(box[3]),
-                    'score': float(score)
-                })
+            
+            # Process NMS per class
+            unique_classes = np.unique(all_classes)
+            for cls_id in unique_classes:
+                cls_mask = all_classes == cls_id
+                c_boxes = all_boxes[cls_mask]
+                c_scores = all_scores[cls_mask]
                 
-            return detections, max_conf_global, total_positive_count
+                indices = self.compute_nms(c_boxes, c_scores)
+                
+                for idx in indices:
+                    box = c_boxes[idx]
+                    score = c_scores[idx]
+                    detections.append({
+                        'x1': int(box[0]), 'y1': int(box[1]),
+                        'x2': int(box[2]), 'y2': int(box[3]),
+                        'score': float(score),
+                        'class_id': int(cls_id),
+                        'class_name': self.CLASS_NAMES.get(int(cls_id), 'Unknown')
+                    })
+                
+            return detections, max_conf_map, total_positive_count
 
         def extract_max_confidence(self, predictions: Union[np.ndarray, List[np.ndarray]]) -> float:
             # This is now handled inside postprocess, wrapper for compatibility if needed
             _, max_conf = self.postprocess(predictions)
             return max_conf
         
-        def get_time_averaged_confidence(self) -> float:
-            """시간 기반 평균 신뢰도 계산"""
-            if not self.confidence_history:
+        def get_time_averaged_confidence(self, cls_id) -> float:
+            """시간 기반 평균 신뢰도 계산 (Class별)"""
+            hist = self.conf_history.get(cls_id)
+            if not hist:
                 return 0.0
-            
-            return float(np.mean(list(self.confidence_history)))
+            return float(np.mean(list(hist)))
         
         def determine_alert_level(self, avg_confidence: float) -> str:
             """평균 신뢰도에 따른 알림 등급 결정"""
@@ -377,30 +403,35 @@ class FireDetectionMonitor:
                     return level
             return 'HIGH'  # >= 0.65
         
-        def log_alert(self, avg_confidence: float, alert_level: str):
-            """알림 로그 출력"""
+        def log_alert(self, avg_conf_map, alert_status_map):
+            """알림 로그 출력 (Class별)"""
             current_time = time.time()
             
-            # 알림 레벨이 변경되었거나 충분한 시간이 경과했을 때만 로그
-            if (alert_level != self.current_alert_level or 
-                current_time - self.last_alert_time > self.alert_duration):
+            for cls_id, status in alert_status_map.items():
+                level = status['level']
+                last = status['last_time']
+                avg = avg_conf_map.get(cls_id, 0.0)
                 
-                self.current_alert_level = alert_level
-                self.last_alert_time = current_time
-                
-                min_conf, max_conf, msg = self.ALERT_LEVEL[alert_level]
-                logger.info(
-                    f"{msg} | "
-                    f"Avg Confidence: {avg_confidence:.4f} | "
-                    f"Detections: {len(self.confidence_history)}"
-                )
+                # Check change or timeout
+                if (level != self.alert_status[cls_id]['level'] or 
+                    current_time - self.alert_status[cls_id]['last_time'] > self.alert_duration):
+                    
+                    self.alert_status[cls_id]['level'] = level
+                    self.alert_status[cls_id]['last_time'] = current_time
+                    
+                    _, _, msg = self.ALERT_LEVEL[level]
+                    name = self.CLASS_NAMES[cls_id]
+                    
+                    # Only log if relevant (skip boring monitoring logs unless debug)
+                    if level != 'MONITORING':
+                        logger.info(f"[{name}] {msg} | Conf: {avg:.4f}")
         
         def draw_info_on_frame(
             self,
             frame: np.ndarray,
-            current_confidence: float,
-            avg_confidence: float,
-            alert_level: str,
+            max_conf_map: dict,
+            avg_conf_map: dict,
+            alert_status_map: dict,
             detections: List[dict] = []
         ) -> np.ndarray:
             """프레임에 정보 및 알림 표시"""
@@ -426,11 +457,17 @@ class FireDetectionMonitor:
                 x2 = int(x2 * scale_x)
                 y2 = int(y2 * scale_y)
                 
-                # Color based on score
-                color = (0, 0, 255) if score > 0.5 else (0, 255, 255)
+                # Color based on class
+                cls_id = det.get('class_id', 0)
+                name = det.get('class_name', 'Fire')
+                
+                base_color = self.CLASS_COLORS.get(cls_id, (0, 255, 0))
+                
+                # Highlight logic
+                color = base_color
                 
                 cv2.rectangle(frame_display, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame_display, f"Fire: {score:.2f}", (x1, y1-10), 
+                cv2.putText(frame_display, f"{name}: {score:.2f}", (x1, y1-10), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
             # --- Draw Status Info ---
@@ -446,47 +483,38 @@ class FireDetectionMonitor:
                 'MEDIUM': (0, 255, 255),         # 노랑
                 'HIGH': (0, 0, 255)              # 빨강
             }
-            color = alert_colors.get(alert_level, (200, 200, 200))
+            # Remove legacy 'color = ...' line as it is defined inside the loop below
             
-            # 정보 표시
+            # 정보 표시 Loop
             y_offset = 30
-            cv2.putText(
-                frame_display,
-                f"Current Conf: {current_confidence:.4f}",
-                (10, y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                color,
-                2
-            )
             
-            y_offset += 30
-            cv2.putText(
-                frame_display,
-                f"Avg Conf ({self.time_window}s): {avg_confidence:.4f}",
-                (10, y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                color,
-                2
-            )
+            for cls_id in [0, 1]:
+                name = self.CLASS_NAMES[cls_id]
+                avg = avg_conf_map.get(cls_id, 0.0)
+                level = alert_status_map[cls_id]['level']
+                _, _, alert_msg = self.ALERT_LEVEL[level]
+                
+                color = self.CLASS_COLORS[cls_id]
+                if level == 'HIGH': color = (0, 0, 255) # High alert is always Red
+                
+                text = f"[{name}] {level} ({avg:.2f}) {alert_msg.split('|')[0]}"
+                
+                cv2.putText(frame_display, text, (10, y_offset),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                y_offset += 30
             
-            y_offset += 30
-            min_conf, max_conf, alert_msg = self.ALERT_LEVEL[alert_level]
-            alert_msg_short = alert_msg.split('|')[0].strip()
-            cv2.putText(
-                frame_display,
-                f"Alert: {alert_msg_short} (Boxes: {len(detections)})",
-                (10, y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                color,
-                2
-            )
+            # 알림 등급별 테두리 (Fire Priority)
+            fire_level = alert_status_map[0]['level']
+            smoke_level = alert_status_map[1]['level']
             
-            # 알림 등급별 테두리
-            thickness = 3
-            cv2.rectangle(frame_display, (0, 0), (w-1, h-1), color, thickness)
+            border_color = (0, 0, 0)
+            if fire_level == 'HIGH': border_color = (0, 0, 255)
+            elif fire_level == 'MEDIUM': border_color = (0, 165, 255)
+            elif smoke_level == 'HIGH': border_color = (200, 200, 200) # Smoke High -> Grey Border
+            
+            if border_color != (0, 0, 0):
+                thickness = 5
+                cv2.rectangle(frame_display, (0, 0), (w-1, h-1), border_color, thickness)
             
             return frame_display
         
@@ -529,36 +557,39 @@ class FireDetectionMonitor:
                     inference_times.append(infer_time)
                     
                     # 후처리 (Decoding + NMS)
-                    detections, max_conf_global, pos_count = self.postprocess(predictions)
+                    detections, max_conf_map, _ = self.postprocess(predictions)
                     
-                    # Standard Confidence Logic (No Density Override)
-                    effective_conf = max_conf_global
-
-                    # 이력에 저장
-                    self.confidence_history.append(effective_conf)
-                    self.timestamp_history.append(current_time)
+                    # 각 클래스별 통계 업데이트
+                    avg_conf_map = {}
+                    alert_status_map = {}
                     
-                    # 평균 신뢰도 계산 및 알림 결정
-                    avg_confidence = self.get_time_averaged_confidence()
-                    alert_level = self.determine_alert_level(avg_confidence)
+                    for cls_id in [0, 1]:
+                        # 이력 저장
+                        curr = max_conf_map.get(cls_id, 0.0)
+                        self.conf_history[cls_id].append(curr)
+                        
+                        # 평균 계산
+                        avg = self.get_time_averaged_confidence(cls_id)
+                        avg_conf_map[cls_id] = avg
+                        
+                        # 레벨 결정
+                        lvl = self.determine_alert_level(avg)
+                        alert_status_map[cls_id] = {'level': lvl, 'last_time': 0} # time not used here strictly
                     
-                    # 알림 로그
-
-
-                    self.log_alert(avg_confidence, alert_level)
+                    self.log_alert(avg_conf_map, alert_status_map)
                     
                     # 프레임에 정보 표시 (박스 포함)
                     frame_with_info = self.draw_info_on_frame(
                         frame,
-                        effective_conf,
-                        avg_confidence,
-                        alert_level,
+                        max_conf_map,
+                        avg_conf_map,
+                        alert_status_map,
                         detections
                     )
                     
-                    # Draw Density Count Debug Info
-                    cv2.putText(frame_with_info, f"Density Count: {pos_count}", (10, 70), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    # Draw Density Count Debug Info - REMOVED (Legacy)
+                    # cv2.putText(frame_with_info, f"Density Count: {pos_count}", (10, 70), 
+                    #            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                     
                     # 화면 표시
                     if display:

@@ -7,11 +7,13 @@
   },
   "trusted_devices": [
     "C2:77:BE:99:90:A1",
+    "1A:95:E8:88:9E:BA",
     "11:22:33:44:55:66"
   ],
   "models": {
     "home_pose": "/home/orangepi/deepx_sdk/dx_app/assets/models/YOLOV5Pose640_1.dxnn",
-    "away_detect": "/home/orangepi/deepx_sdk/dx_app/assets/models/YoloV8N.dxnn"
+    "away_detect": "/home/orangepi/deepx_sdk/dx_app/assets/models/YoloV8N.dxnn",
+    "fire_detect": "/home/orangepi/deepx_sdk/dx_app/assets/models/v7_opset12_proper.dxnn"
   },
   "mqtt": {
     "host": "192.168.219.101",
@@ -24,7 +26,19 @@
     "iou": 0.45,
     "move": 30,
     "sleep_buffer": 30,
-    "alert_cooldown": 5
+    "alert_cooldown": 5,
+    "intruder": {
+      "confidence": 0.75,
+      "time_window": 1.0
+    },
+    "fire": {
+      "confidence_levels": {
+        "LOW": 0.20,
+        "MEDIUM": 0.40,
+        "HIGH": 0.60
+      },
+      "time_window": 3.0
+    }
   },
   "fall_params": {
     "velocity_threshold": 1200,
