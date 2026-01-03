@@ -1,0 +1,35 @@
+{
+  "system": {
+    "arp_interface": "wlP2p33s0",
+    "arp_interval": 10,
+    "force_mode": "AUTO",
+    "away_timeout": 300
+  },
+  "trusted_devices": [
+    "C2:77:BE:99:90:A1",
+    "11:22:33:44:55:66"
+  ],
+  "models": {
+    "home_pose": "/home/orangepi/deepx_sdk/dx_app/assets/models/YOLOV5Pose640_1.dxnn",
+    "away_detect": "/home/orangepi/deepx_sdk/dx_app/assets/models/YoloV8N.dxnn"
+  },
+  "mqtt": {
+    "host": "192.168.219.101",
+    "port": 1883,
+    "topic": "home/security",
+    "ha_topic": "home/ha_status"
+  },
+  "thresholds": {
+    "confidence": 0.30,
+    "iou": 0.45,
+    "move": 30,
+    "sleep_buffer": 30,
+    "alert_cooldown": 5
+  },
+  "fall_params": {
+    "velocity_threshold": 1200,
+    "min_fall_dist": 180,
+    "time_window": 0.25,
+    "max_history": 15
+  }
+}

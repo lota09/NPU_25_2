@@ -1,0 +1,10 @@
+# scripts.yaml 파일이나 UI 편집기에서 추가
+alias: 'Temperature Up 1C'  # 스크립트 이름
+sequence:
+  - service: climate.set_temperature  # 목표 온도 설정 서비스를 호출
+    target:
+      entity_id: climate.your_thermostat  # (중요) 제어할 온도 조절기 엔티티 ID로 변경
+    data:
+      temperature: >
+        {{ (state_attr('climate.your_thermostat', 'temperature') | float(0)) + 1 }}
+mode: single

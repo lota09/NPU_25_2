@@ -1,12 +1,29 @@
-/.venv/
-/assignment*/
-.gitignore
-assets/
-dev/
-results/
-trash/
+# Dependencies
+node_modules/
+npm-debug.log*
+
+# Python
 __pycache__/
+*.py[cod]
+venv/
+venv-dxnn/
+*.egg-info/
+
+# Logs
+*.log
+logs/
+
+# Images (captured)
+*.jpg
+*.jpeg
+!monoculus-app/public/images/*.svg
+!monoculus-app/public/images/intruder.png
+
+# Models
+*.dxnn
 *.pt
-.vscode/
-/week*/
-.gitignore
+*.pth
+
+# Videos
+*.avi
+*.mp4
