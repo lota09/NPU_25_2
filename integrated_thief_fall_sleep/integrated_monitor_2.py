@@ -22,6 +22,16 @@ from collections import deque, Counter
 from concurrent.futures import ThreadPoolExecutor
 from scipy.special import expit # For Fire Detector
 
+# [Add] Robust Presence Detection
+try:
+    from user_presence import RobustPresenceDetector
+except ImportError as e:
+    print(f"⚠️ RobustPresenceDetector import failed: {e}")
+    RobustPresenceDetector = None
+except Exception as e:
+    print(f"⚠️ RobustPresenceDetector setup error: {e}")
+    RobustPresenceDetector = None
+
 # DeepX SDK Check
 try:
     from dx_engine import InferenceEngine, InferenceOption
@@ -518,9 +528,17 @@ class SystemManager:
         self.thief_detector = ThiefDetector()
         self.macs = [m.upper() for m in CONFIG["trusted_devices"]]
         self.known_ips = {} # MAC -> Last Known IP
-        self.last_home_time = time.time() # Grace period logic
         self.ha_data = None # Data from Home Assistant
         self.executor = ThreadPoolExecutor(max_workers=2) # For parallel inference
+        
+        # [Add] Robust Presence Detector
+        self.presence_detector = None
+        if RobustPresenceDetector:
+            self.presence_detector = RobustPresenceDetector(
+                self.macs, 
+                interface=CONFIG["system"]["arp_interface"],
+                subnet_prefix=CONFIG["system"].get("subnet_prefix", "192.168.50")
+            )
         
         if MQTT_AVAILABLE:
             try:
@@ -572,6 +590,12 @@ class SystemManager:
             self.is_home = (mode == "HOME")
             return
 
+        # [Modified] Use RobustPresenceDetector if available
+        if self.presence_detector:
+            self.is_home = self.presence_detector.scan()
+            return
+
+        # Fallback to old logic if module missing
         try:
             iface = CONFIG["system"]["arp_interface"]
             cmd = ["sudo", "arp-scan", "-l", f"--interface={iface}"]
@@ -580,7 +604,7 @@ class SystemManager:
             # [ARP Cache Refresh] arp-scan이 없을 때
             if cmd[0] == "arp":
                 try:
-                    subprocess.run(["ping", "-c", "1", "-b", "192.168.219.255"], 
+                    subprocess.run(["ping", "-c", "1", "-b", "192.168.50.255"], 
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=0.2)
                 except: pass
 
@@ -834,7 +858,7 @@ class SystemManager:
                          if fdets:
                              for det in fdets:
                                  name = det.get('class_name', 'Fire')
-                                 color = (0,0,255) if name == 'Fire' else (200,200,200)
+                                 color = (0,0,255) if name == 'Fire' else (0,165,255) # Orange for Smoke
                                  self._draw_overlay(frame, det['bbox'], f"{name} {det['score']:.2f}", color)
                          
                          if f_results:
@@ -843,7 +867,7 @@ class SystemManager:
                                      name = res['name']
                                      level = res['level']
                                      avg = res['avg_conf']
-                                     color = (0,0,255) if name == 'Fire' else (200,200,200)
+                                     color = (0,0,255) if name == 'Fire' else (0,165,255) # Orange for Smoke
                                      
                                      cv2.putText(frame, f"{name}: {level} ({avg:.2f})", (10, y_off), 1, 1.5, color, 2)
                                      y_off += 40
@@ -857,22 +881,26 @@ class SystemManager:
 
                          # --- 2. Process Intruder Results ---
                          if intruder_data:
-                             i_dets, i_intruder, i_should, i_conf = intruder_data
-                             
-                             for d in i_dets:
-                                 self._draw_overlay(frame, d['bbox'], f"Person {d['conf']:.2f}", (0,0,255))
-                             
-                             if i_intruder:
-                                 intruder_alert = True
-                                 self._draw_overlay(frame, (10,10,200,60), f"INTRUDER! ({i_conf:.2f})", (0,0,255))
-                                 if i_should:
-                                      print(f"🚨 INTRUDER ALERT CONDITION (Conf: {i_conf:.2f})")
-                                      if self.mqtt:
-                                           payload = "INTRUDER_DETECTED"
-                                           self.mqtt.publish(CONFIG["mqtt"]["topic"], payload)
-                                           print(f"   -> MQTT SENT: {payload}")
-                             else:
-                                 cv2.putText(frame, f"Monitoring... (Intruder AVG: {i_conf:.2f})", (10, 50), 1, 1, (255,255,0), 2)
+                              i_dets, i_intruder, i_should, i_conf = intruder_data
+                              
+                              for d in i_dets:
+                                  self._draw_overlay(frame, d['bbox'], f"Person {d['conf']:.2f}", (255,0,0))
+                              
+                              # Persistent Display on Left Top
+                              cv2.putText(frame, f"Intruder: {'ALERT' if i_intruder else 'MONITORING'} ({i_conf:.2f})", 
+                                          (10, 60), 1, 1.5, (255,0,0) if i_intruder else (255,255,0), 2)
+
+                              if i_intruder:
+                                  intruder_alert = True
+                                  # Fixed rectangle removed as requested
+                                  if i_should:
+                                       print(f"🚨 INTRUDER ALERT CONDITION (Conf: {i_conf:.2f})")
+                                       if self.mqtt:
+                                            payload = "INTRUDER_DETECTED"
+                                            self.mqtt.publish(CONFIG["mqtt"]["topic"], payload)
+                                            print(f"   -> MQTT SENT: {payload}")
+                              else:
+                                  pass # Displayed persistently above
                                  
                  except Exception: 
                      print("🚨 RUNTIME ERROR IN LOOP:")

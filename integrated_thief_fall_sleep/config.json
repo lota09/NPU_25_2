@@ -2,6 +2,7 @@
   "system": {
     "arp_interface": "wlP2p33s0",
     "arp_interval": 10,
+    "subnet_prefix": "192.168.50",
     "force_mode": "AUTO",
     "away_timeout": 300
   },
