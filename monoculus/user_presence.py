@@ -99,8 +99,33 @@ class RobustPresenceDetector:
         """Returns a map of MAC -> (IP, Interface, Status) from ip neighbor show."""
         neighbor_map = {}
         try:
+            # Try different ip command paths
+            ip_cmd = None
+            for path in ["/usr/sbin/ip", "/sbin/ip", "ip"]:
+                try:
+                    subprocess.run([path, "--version"], capture_output=True, check=True)
+                    ip_cmd = path
+                    break
+                except:
+                    continue
+            
+            if not ip_cmd:
+                # Fallback: Use /proc/net/arp instead
+                try:
+                    with open('/proc/net/arp', 'r') as f:
+                        for line in f.readlines()[1:]:  # Skip header
+                            parts = line.split()
+                            if len(parts) >= 6:
+                                ip = parts[0]
+                                mac = parts[3].upper().strip()
+                                if mac != "00:00:00:00:00:00":
+                                    neighbor_map[mac] = (ip, self.interface, "UNKNOWN")
+                except:
+                    pass
+                return neighbor_map
+            
             # filter by interface for more accuracy
-            res = subprocess.run(["ip", "neighbor", "show", "dev", self.interface], 
+            res = subprocess.run([ip_cmd, "neighbor", "show", "dev", self.interface], 
                                  capture_output=True, text=True, check=False)
             for line in res.stdout.splitlines():
                 if "lladdr" in line:

@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MONOCULUS - AI Security Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@100;400;700;900&display=swap" rel="stylesheet">
     <style>
@@ -49,15 +50,15 @@
     <!-- Header -->
     <header
         class="fixed top-0 inset-x-0 z-50 glass px-6 py-4 flex justify-between items-center transition-all duration-300">
-        <div class="flex items-center gap-3">
-            <div class="bg-blue-600 p-2 rounded-xl shadow-lg shadow-blue-200">
+        <div class="flex items-center gap-3 cursor-pointer" @click="goHome()">
+            <div class="bg-blue-600 p-2 rounded-xl shadow-lg shadow-blue-200 hover:scale-110 transition-transform">
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
                     stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
                     <circle cx="12" cy="12" r="3" />
                 </svg>
             </div>
-            <h1 class="text-xl font-black tracking-tighter uppercase text-slate-900 lg:text-2xl">MONOCULUS</h1>
+            <h1 class="text-xl font-black tracking-tighter uppercase text-slate-900 lg:text-2xl hover:text-blue-600 transition-colors">MONOCULUS</h1>
             <div class="flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100/50 border border-slate-200">
                 <div class="w-2 h-2 rounded-full animate-pulse" :class="connected ? 'bg-green-500' : 'bg-red-500'">
                 </div>
@@ -65,7 +66,33 @@
                     x-text="connected ? 'CONNECTED' : 'DISCONNECTED'"></span>
             </div>
         </div>
-        <div class="flex items-center gap-4">
+        <div class="flex items-center gap-2">
+            <!-- Sleeping Button -->
+            <button @click="showSleepAnalysis = true" 
+                class="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-xs rounded-lg transition-colors border border-indigo-200">
+                <span class="flex items-center gap-1">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+                    </svg>
+                    SLEEP
+                </span>
+            </button>
+            
+            <!-- Log Button -->
+            <button @click="showLogView = true" 
+                class="px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 font-bold text-xs rounded-lg transition-colors border border-slate-200">
+                <span class="flex items-center gap-1">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                        <polyline points="10 9 9 9 8 9"/>
+                    </svg>
+                    LOG
+                </span>
+            </button>
+            
             <button @click="resetStatus()" class="group p-2 rounded-full hover:bg-slate-100 transition-colors">
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
                     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
@@ -341,6 +368,178 @@
                 </div>
             </div>
         </template>
+        
+        <!-- Sleep Analysis Modal -->
+        <div x-show="showSleepAnalysis" x-cloak 
+            class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-6"
+            @click.self="showSleepAnalysis = false">
+            <div class="bg-white rounded-3xl p-8 max-w-2xl w-full shadow-2xl max-h-[90vh] overflow-y-auto">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-2xl font-black text-slate-900 flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+                        </svg>
+                        수면 분석
+                    </h2>
+                    <button @click="showSleepAnalysis = false" class="p-2 hover:bg-slate-100 rounded-full">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18"/>
+                            <line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    </button>
+                </div>
+                
+                <!-- Sleep Stats -->
+                <div class="grid grid-cols-2 gap-4 mb-6">
+                    <div class="bg-purple-50 rounded-2xl p-6 border border-purple-100">
+                        <p class="text-sm text-purple-600 font-bold mb-2">뒤척임 횟수</p>
+                        <p class="text-4xl font-black text-purple-700" x-text="state.sleep.toss_turn_count + '회'">0회</p>
+                        <p class="text-xs text-purple-500 mt-2">간 밤 사이 총 뒤척임</p>
+                    </div>
+                    <div class="bg-orange-50 rounded-2xl p-6 border border-orange-100">
+                        <p class="text-sm text-orange-600 font-bold mb-2">현재 온도</p>
+                        <p class="text-4xl font-black text-orange-700" x-text="Math.floor(state.sleep.temperature) + '°C'">23°C</p>
+                        <p class="text-xs text-orange-500 mt-2">실내 측정 온도</p>
+                    </div>
+                </div>
+                
+                <!-- Combined Chart -->
+                <div class="bg-slate-50 rounded-2xl p-6 mb-6 border border-slate-200">
+                    <h3 class="text-lg font-bold text-slate-800 mb-4">📊 수면 분석 그래프 (온도 & 뒤척임)</h3>
+                    <div style="height: 120px; position: relative;">
+                        <canvas id="combinedChart"></canvas>
+                    </div>
+                </div>
+                
+                <!-- Sleep Insights -->
+                <div class="bg-blue-50 rounded-2xl p-6 border border-blue-100">
+                    <h3 class="text-lg font-bold text-blue-900 mb-3 flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="M12 16v-4"/>
+                            <path d="M12 8h.01"/>
+                        </svg>
+                        수면 인사이트
+                    </h3>
+                    <ul class="space-y-2 text-sm text-blue-800">
+                        <li class="flex items-start gap-2">
+                            <span class="text-blue-500">•</span>
+                            <span>평균 온도가 적정 범위 내에 있습니다 (22-24°C)</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <span class="text-blue-500">•</span>
+                            <span x-text="state.sleep.toss_turn_count > 5 ? '뒤척임이 많았습니다. 침실 환경을 점검해보세요.' : '안정적인 수면을 취하신 것으로 보입니다.'">수면 상태 양호</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <span class="text-blue-500">•</span>
+                            <span>온도 변화가 감지되었습니다. 에어컨/난방 조절을 권장합니다.</span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Log Viewer Modal -->
+        <div x-show="showLogView" x-cloak 
+            class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-6"
+            @click.self="showLogView = false">
+            <div class="bg-white rounded-3xl p-8 max-w-4xl w-full shadow-2xl max-h-[90vh] overflow-y-auto">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-2xl font-black text-slate-900 flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/>
+                        </svg>
+                        이벤트 로그
+                    </h2>
+                    <button @click="showLogView = false" class="p-2 hover:bg-slate-100 rounded-full">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18"/>
+                            <line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    </button>
+                </div>
+                
+                <!-- Log List -->
+                <div class="space-y-3">
+                    <template x-for="log in logs" :key="log.id">
+                        <div class="bg-slate-50 rounded-xl p-4 border border-slate-200 hover:shadow-md transition-shadow">
+                            <div class="flex items-start gap-4">
+                                <!-- Event Icon -->
+                                <div class="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
+                                     :class="{
+                                         'bg-red-100': log.message.includes('Fire') || log.message.includes('🔥'),
+                                         'bg-slate-900 text-white': log.message.includes('Intruder') || log.message.includes('🚨'),
+                                         'bg-orange-100': log.message.includes('Fall') || log.message.includes('⚡'),
+                                         'bg-blue-100': !log.message.includes('ALERT')
+                                     }">
+                                    <template x-if="log.message.includes('Fire') || log.message.includes('🔥')">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" class="text-red-600">
+                                            <path d="M12 2c1.5 3.5 3.5 5.5 5 7 1.5 1.5 2 3.5 2 5 0 3.87-3.13 7-7 7s-7-3.13-7-7c0-1.5.5-3.5 2-5 1.5-1.5 3.5-3.5 5-7z"/>
+                                        </svg>
+                                    </template>
+                                    <template x-if="log.message.includes('Intruder') || log.message.includes('🚨')">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                                        </svg>
+                                    </template>
+                                    <template x-if="log.message.includes('Fall') || log.message.includes('⚡')">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" class="text-orange-600">
+                                            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                                        </svg>
+                                    </template>
+                                    <template x-if="!log.message.includes('ALERT')">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <circle cx="12" cy="12" r="10"/>
+                                            <polyline points="12 6 12 12 16 14"/>
+                                        </svg>
+                                    </template>
+                                </div>
+                                
+                                <!-- Log Details -->
+                                <div class="flex-1">
+                                    <div class="flex items-center justify-between mb-1">
+                                        <span class="text-xs font-bold text-slate-500 tracking-wider" x-text="log.time">20:37:00</span>
+                                        <span class="text-xs px-2 py-1 rounded-full font-bold"
+                                              :class="{
+                                                  'bg-red-100 text-red-700': log.message.includes('Fire') || log.message.includes('🔥'),
+                                                  'bg-slate-900 text-white': log.message.includes('Intruder') || log.message.includes('🚨'),
+                                                  'bg-orange-100 text-orange-700': log.message.includes('Fall') || log.message.includes('⚡'),
+                                                  'bg-blue-100 text-blue-700': !log.message.includes('ALERT')
+                                              }"
+                                              x-text="log.message.includes('ALERT') ? 'ALERT' : 'INFO'">
+                                            INFO
+                                        </span>
+                                    </div>
+                                    <p class="text-sm font-semibold text-slate-800 mb-2" x-text="log.message">System event logged</p>
+                                    
+                                    <!-- Image if available -->
+                                    <template x-if="log.image">
+                                        <div class="mt-3">
+                                            <img :src="log.image + '?t=' + log.id" 
+                                                 alt="Event Image" 
+                                                 class="w-full rounded-lg border border-slate-200 max-h-64 object-cover"
+                                                 @error="$el.src = '/images/placeholder.jpg'">
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                    
+                    <!-- Empty State -->
+                    <template x-if="logs.length === 0">
+                        <div class="text-center py-12">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="mx-auto text-slate-300 mb-4">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                <polyline points="14 2 14 8 20 8"/>
+                            </svg>
+                            <p class="text-slate-400 font-medium">아직 기록된 로그가 없습니다</p>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
     </main>
 
     <!-- Footer -->
@@ -370,6 +569,9 @@
                     sleep: { toss_turn_count: 0, temperature: 23.5 }
                 },
                 logs: [],
+                showSleepAnalysis: false,
+                showLogView: false,
+                tempChart: null,
 
                 init() {
                     this.updateUptime();
@@ -377,6 +579,147 @@
                     this.fetchData();
                     setInterval(() => this.fetchData(), 2000);
                     this.addLog("Monoculus Dashboard Initialized");
+                    
+                    // Watch for modal open to initialize charts
+                    this.$watch('showSleepAnalysis', (value) => {
+                        if (value) {
+                            setTimeout(() => this.initCharts(), 100);
+                        }
+                    });
+                },
+
+                initCharts() {
+                    // Generate sample data for last 12 hours
+                    const hours = [];
+                    const tempData = [];
+                    const tossTurnData = [];
+                    
+                    for (let i = 11; i >= 0; i--) {
+                        const hour = new Date();
+                        hour.setHours(hour.getHours() - i);
+                        hours.push(hour.getHours() + ':00');
+                        
+                        // Temperature data (22-25°C range)
+                        tempData.push(Math.floor(22 + Math.random() * 3));
+                        
+                        // Toss turn data (0-3 times per hour)
+                        tossTurnData.push(Math.floor(Math.random() * 4));
+                    }
+                    
+                    // Combined Chart with dual Y-axes
+                    const combinedCtx = document.getElementById('combinedChart');
+                    if (combinedCtx && !this.tempChart) {
+                        this.tempChart = new Chart(combinedCtx, {
+                            type: 'line',
+                            data: {
+                                labels: hours,
+                                datasets: [
+                                    {
+                                        label: '온도 (°C)',
+                                        data: tempData,
+                                        borderColor: 'rgb(249, 115, 22)',
+                                        backgroundColor: 'rgba(249, 115, 22, 0.1)',
+                                        tension: 0.4,
+                                        fill: true,
+                                        pointRadius: 4,
+                                        pointHoverRadius: 6,
+                                        yAxisID: 'y-temp',
+                                        borderWidth: 2
+                                    },
+                                    {
+                                        label: '뒤척임 횟수',
+                                        data: tossTurnData,
+                                        borderColor: 'rgb(139, 92, 246)',
+                                        backgroundColor: 'rgba(139, 92, 246, 0.1)',
+                                        tension: 0.4,
+                                        fill: true,
+                                        pointRadius: 4,
+                                        pointHoverRadius: 6,
+                                        borderWidth: 2,
+                                        yAxisID: 'y-toss'
+                                    }
+                                ]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                layout: {
+                                    padding: {
+                                        top: 5,
+                                        bottom: 5
+                                    }
+                                },
+                                interaction: {
+                                    mode: 'index',
+                                    intersect: false
+                                },
+                                plugins: {
+                                    legend: {
+                                        display: true,
+                                        position: 'top',
+                                        labels: {
+                                            usePointStyle: true,
+                                            padding: 8,
+                                            font: {
+                                                size: 11,
+                                                weight: 'bold'
+                                            },
+                                            boxWidth: 10,
+                                            boxHeight: 10
+                                        }
+                                    }
+                                },
+                                scales: {
+                                    'y-temp': {
+                                        type: 'linear',
+                                        position: 'left',
+                                        beginAtZero: false,
+                                        min: 20,
+                                        max: 26,
+                                        ticks: {
+                                            stepSize: 2,
+                                            callback: function(value) {
+                                                return Math.floor(value) + '°C';
+                                            },
+                                            color: 'rgb(249, 115, 22)',
+                                            font: {
+                                                weight: 'bold'
+                                            }
+                                        },
+                                        grid: {
+                                            color: 'rgba(249, 115, 22, 0.1)'
+                                        }
+                                    },
+                                    'y-toss': {
+                                        type: 'linear',
+                                        position: 'right',
+                                        beginAtZero: true,
+                                        max: 5,
+                                        ticks: {
+                                            stepSize: 1,
+                                            callback: function(value) {
+                                                return value + '회';
+                                            },
+                                            color: 'rgb(139, 92, 246)',
+                                            font: {
+                                                weight: 'bold'
+                                            }
+                                        },
+                                        grid: {
+                                            drawOnChartArea: false
+                                        }
+                                    },
+                                    x: {
+                                        ticks: {
+                                            font: {
+                                                size: 11
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
                 },
 
                 updateUptime() {
@@ -406,9 +749,15 @@
 
                             // Check for new alerts to log only if connected
                             if (this.connected) {
-                                if (data.fire.detected && !JSON.parse(prev).fire.detected) this.addLog("🔥 ALERT: Fire/Smoke detected!");
-                                if (data.intruder.detected && !JSON.parse(prev).intruder.detected) this.addLog("🚨 ALERT: Intruder detected!");
-                                if (data.fall.detected && !JSON.parse(prev).fall.detected) this.addLog("⚡ ALERT: Fall detected!");
+                                if (data.fire.detected && !JSON.parse(prev).fire.detected) {
+                                    this.addLog("🔥 ALERT: Fire/Smoke detected!", data.fire.image_url);
+                                }
+                                if (data.intruder.detected && !JSON.parse(prev).intruder.detected) {
+                                    this.addLog("🚨 ALERT: Intruder detected!", data.intruder.image_url);
+                                }
+                                if (data.fall.detected && !JSON.parse(prev).fall.detected) {
+                                    this.addLog("⚡ ALERT: Fall detected!", data.fall.image_url);
+                                }
                             }
                         } else {
                             this.connected = false;
@@ -451,11 +800,27 @@
                     return "/images/placeholder.jpg";
                 },
 
-                addLog(msg) {
+                addLog(msg, imageUrl = null) {
                     const now = new Date();
                     const time = now.toLocaleTimeString('ko-KR', { hour12: false });
-                    this.logs.unshift({ id: Date.now(), time, message: msg });
-                    if (this.logs.length > 5) this.logs.pop();
+                    this.logs.unshift({ 
+                        id: Date.now(), 
+                        time, 
+                        message: msg,
+                        image: imageUrl 
+                    });
+                    if (this.logs.length > 20) this.logs.pop();
+                },
+
+                goHome() {
+                    this.showSleepAnalysis = false;
+                    this.showLogView = false;
+                    
+                    // Destroy chart when closing modal
+                    if (this.tempChart) {
+                        this.tempChart.destroy();
+                        this.tempChart = null;
+                    }
                 },
 
                 async resetStatus() {
