@@ -50,6 +50,7 @@ trap cleanup SIGINT SIGTERM EXIT
 
 # 1. Cleanup existing processes
 echo "🧹 Cleaning up existing Monoculus processes..."
+pkill -9 -f main.py 2>/dev/null
 pkill -9 -f integrated_monitor_2.py 2>/dev/null
 pkill -9 -f app.py 2>/dev/null
 sleep 1
@@ -77,14 +78,14 @@ echo "------------------------------------------------"
 if [ "$HEADLESS_MODE" == "true" ]; then
     export QT_QPA_PLATFORM=offscreen
     # Pipe output to log and shell
-    python3 integrated_monitor_2.py --nogui > >(tee -a "${MONITOR_LOG}") 2>&1 &
+    python3 main.py --nogui > >(tee -a "${MONITOR_LOG}") 2>&1 &
     MONITOR_PID=$!
 else
     if [ -z "$DISPLAY" ]; then
         export DISPLAY=:0
     fi
     echo "📺 Camera GUI will be displayed on $DISPLAY"
-    python3 integrated_monitor_2.py > >(tee -a "${MONITOR_LOG}") 2>&1 &
+    python3 main.py > >(tee -a "${MONITOR_LOG}") 2>&1 &
     MONITOR_PID=$!
 fi
 

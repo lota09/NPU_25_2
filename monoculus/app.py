@@ -148,4 +148,6 @@ def serve_image(filename):
     return send_from_directory(IMAGE_DIR, filename)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Use adhoc SSL context for immediate HTTPS support
+    # Requires: pip install pyOpenSSL
+    app.run(host='0.0.0.0', port=5000, debug=True, ssl_context='adhoc')

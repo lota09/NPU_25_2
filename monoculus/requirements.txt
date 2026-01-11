@@ -1,6 +1,9 @@
-flask
-flask-cors
+
+Flask
+Flask-CORS
 requests
 paho-mqtt
 numpy
-# opencv-python-headless # (Optional: Orange Pi may use system apt python3-opencv)
+scipy
+opencv-python-headless
+pyOpenSSL
